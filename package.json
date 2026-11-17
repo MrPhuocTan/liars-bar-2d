@@ -1,0 +1,14 @@
+{
+  "name": "liars-bar-2d-web",
+  "version": "1.0.0",
+  "description": "Liar's Bar 2D — Online Web Pixel Version (Liar's Deck, Empty-Hand Win & Russian Roulette)",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test tests/engine.test.js tests/e2e_qa_verify.mjs"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
