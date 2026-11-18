@@ -29,6 +29,9 @@ import {
   getPublicState
 } from './src/engine/gameEngine.js';
 import { chooseAIAction } from './src/engine/aiBot.js';
+import { GameDatabase } from './src/db/database.js';
+import { attachWebSocketServer } from './src/server/wsServer.js';
+import { RoomManager } from './src/server/roomManager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -46,48 +49,9 @@ const MIME_TYPES = {
   '.ico': 'image/x-icon'
 };
 
-// Pre-populated public rooms & active match store
+// Legacy single-player REST match store (for backward-compatible API tests)
 const roomsStore = new Map();
-
-function initDefaultRooms() {
-  const presets = [
-    {
-      roomId: 'BAN-101',
-      roomName: 'Quán Rượu Cáo Già #101',
-      winMode: WIN_MODES.EMPTY_HAND_WIN,
-      includeDevil: false,
-      botDifficulty: 'NORMAL',
-      playerCount: 4,
-      seed: 10101
-    },
-    {
-      roomId: 'BAN-202',
-      roomName: 'Bàn Tử Thần Ác Quỷ #202',
-      winMode: WIN_MODES.EMPTY_HAND_WIN,
-      includeDevil: true,
-      botDifficulty: 'HARD',
-      playerCount: 4,
-      seed: 20202
-    },
-    {
-      roomId: 'BAN-303',
-      roomName: 'Sinh Tử Cổ Điển (Liar\'s Bar) #303',
-      winMode: WIN_MODES.CLASSIC_SURVIVAL,
-      includeDevil: false,
-      botDifficulty: 'NORMAL',
-      playerCount: 4,
-      seed: 30303
-    }
-  ];
-
-  for (const preset of presets) {
-    const match = createMatchState(preset);
-    roomsStore.set(preset.roomId, match);
-  }
-}
-
-initDefaultRooms();
-let activeRoomId = 'BAN-101';
+let activeRoomId = null;
 
 function sendJSON(res, statusCode, payload) {
   const body = JSON.stringify(payload);
@@ -146,7 +110,16 @@ function serveSafeFile(res, baseDir, relativeTarget) {
   });
 }
 
-export function createAppServer() {
+export function createAppServer(options = {}) {
+  const db = new GameDatabase(options.dbPath);
+  const roomManager = new RoomManager(db, {
+    turnTimeSeconds: options.turnTimeSeconds ?? 60,
+    disconnectGraceMs: options.disconnectGraceMs ?? 45000,
+    botThinkMinMs: options.botThinkMinMs ?? 1900,
+    botThinkMaxMs: options.botThinkMaxMs ?? 2700,
+    roundEndDelayMs: options.roundEndDelayMs ?? 4800
+  });
+
   const server = http.createServer(async (req, res) => {
     try {
       const parsedUrl = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`);
@@ -157,27 +130,14 @@ export function createAppServer() {
         sendJSON(res, 200, {
           status: 'ok',
           game: "Liar's Bar 2D - Online Web Version",
-          activeRoomId,
-          roomsCount: roomsStore.size
+          publicRoomsCount: roomManager.getPublicRooms().length
         });
         return;
       }
 
-      // 2. List public rooms (Online Lobby)
+      // 2. List public rooms (Online Lobby — excludes private rooms & pre-populated bot rooms)
       if (req.method === 'GET' && pathname === '/api/rooms') {
-        const rooms = Array.from(roomsStore.values()).map((m) => ({
-          roomId: m.roomId,
-          roomName: m.roomName,
-          winMode: m.winMode,
-          includeDevil: m.includeDevil,
-          botDifficulty: m.botDifficulty,
-          roundNumber: m.roundNumber,
-          tableRank: m.tableRank,
-          phase: m.phase,
-          aliveCount: m.players.filter((p) => p.alive).length,
-          totalPlayers: m.players.length
-        }));
-        sendJSON(res, 200, { ok: true, activeRoomId, rooms });
+        sendJSON(res, 200, { ok: true, rooms: roomManager.getPublicRooms() });
         return;
       }
 
@@ -214,12 +174,67 @@ export function createAppServer() {
 
       // 4. Get current match state
       if (req.method === 'GET' && pathname === '/api/match/state') {
-        const requestedRoomId = parsedUrl.searchParams.get('roomId') || activeRoomId;
-        const matchState = roomsStore.get(requestedRoomId) || roomsStore.get(activeRoomId);
+        const requestedRoomId = (parsedUrl.searchParams.get('roomId') || activeRoomId).trim().toUpperCase();
+        const matchState =
+          roomsStore.get(requestedRoomId) ||
+          roomsStore.get(`BAN-${requestedRoomId}`) ||
+          roomsStore.get(activeRoomId);
         if (!matchState) {
           sendJSON(res, 404, { ok: false, error: 'Không tìm thấy phòng chơi.' });
           return;
         }
+        activeRoomId = matchState.roomId;
+        sendJSON(res, 200, {
+          ok: true,
+          roomId: matchState.roomId,
+          state: getPublicState(matchState, 'p0')
+        });
+        return;
+      }
+
+      // 4b. Join room by Room Code (POST /api/match/join)
+      if (req.method === 'POST' && pathname === '/api/match/join') {
+        const body = await readJsonBody(req);
+        const rawCode = String(body.roomCode || '').trim().toUpperCase().replace(/^#/, '');
+        if (!rawCode) {
+          sendJSON(res, 400, { ok: false, error: 'Vui lòng nhập mã phòng (ví dụ: BAN-101 hoặc 101).' });
+          return;
+        }
+
+        let matchState =
+          roomsStore.get(rawCode) ||
+          roomsStore.get(`BAN-${rawCode}`);
+
+        // Also allow matching by suffix digits
+        if (!matchState) {
+          for (const [key, val] of roomsStore.entries()) {
+            if (key.endsWith(`-${rawCode}`) || key === rawCode) {
+              matchState = val;
+              break;
+            }
+          }
+        }
+
+        // If room code does not exist yet and createIfMissing is true (default), create that room code!
+        if (!matchState) {
+          const normalizedCode = rawCode.startsWith('BAN-') || rawCode.includes('-')
+            ? rawCode.slice(0, 16)
+            : `BAN-${rawCode.slice(0, 12)}`;
+          matchState = createMatchState({
+            roomId: normalizedCode,
+            roomName: `Bàn Mã #${normalizedCode}`,
+            playerName: body.playerName || 'Bạn (Tay Chơi)',
+            playerAvatar: body.playerAvatar || 'human',
+            winMode: WIN_MODES.EMPTY_HAND_WIN
+          });
+          roomsStore.set(normalizedCode, matchState);
+        } else if (body.playerName && matchState.players[0]) {
+          matchState.players[0].name = String(body.playerName).trim().slice(0, 24) || matchState.players[0].name;
+          if (body.playerAvatar) {
+            matchState.players[0].avatarKey = body.playerAvatar;
+          }
+        }
+
         activeRoomId = matchState.roomId;
         sendJSON(res, 200, {
           ok: true,
@@ -251,10 +266,12 @@ export function createAppServer() {
           } else if (actionType === 'PASS_FINAL') {
             passFinalChallenge(matchState, playerId);
           } else if (actionType === 'PULL_TRIGGER') {
+            const allowTestCheats =
+              process.env.NODE_ENV === 'test' || process.env.ALLOW_TEST_CHEATS === '1';
             const targetId = body.targetPlayerId || matchState.pendingPenalty?.targetPlayerIds?.[0] || playerId;
             pullTrigger(matchState, targetId, {
-              forceDodge: Boolean(body.forceDodge),
-              forceFatal: Boolean(body.forceFatal)
+              forceDodge: allowTestCheats && Boolean(body.forceDodge),
+              forceFatal: allowTestCheats && Boolean(body.forceFatal)
             });
           } else if (actionType === 'NEXT_ROUND') {
             startNewRound(matchState);
@@ -321,6 +338,19 @@ export function createAppServer() {
       sendJSON(res, 500, { ok: false, error: err.message || 'Internal Server Error' });
     }
   });
+
+  const wsServer = attachWebSocketServer(server, (conn) => {
+    roomManager.registerConnection(conn);
+  });
+
+  server.on('close', () => {
+    wsServer.closeAll();
+    roomManager.destroy();
+    db.close();
+  });
+
+  server.roomManager = roomManager;
+  server.db = db;
 
   return server;
 }

@@ -10,7 +10,7 @@
  * - 6-Chamber Russian Roulette Revolver (1/6 -> 6/6) with:
  *   - BLANK (Đạn rỗng: xoay 1 nấc + kêu Tách)
  *   - FATAL (Trúng đạn: bắn vỡ Avatar, loại khỏi trận)
- *   - MIRACLE DODGE (1% xác suất bắn hụt: Avatar thu nhỏ nhảy lên né đạn "Hú hồn, né được nhé!")
+ *   - MIRACLE DODGE (5% xác suất bắn hụt: Avatar thu nhỏ nhảy lên né đạn "Hú hồn, né được nhé!")
  */
 
 export const CARD_RANKS = ['K', 'Q', 'A'];
@@ -153,58 +153,103 @@ export function createMatchState(options = {}) {
     playerName = 'Bạn (Tay Chơi)',
     playerAvatar = 'human',
     playerCount = 4,
+    players: customPlayers = null,
     winMode = WIN_MODES.EMPTY_HAND_WIN,
     includeDevil = false,
-    botDifficulty = 'NORMAL',
-    turnTimeSeconds = 30,
+    devilProbability = 0.30,
+    botDifficulty = 'MATH_MASTER',
+    turnTimeSeconds = 60,
     seed = Date.now()
   } = options;
 
-  const clampedCount = Math.min(4, Math.max(2, Number(playerCount) || 4));
   const rng = createSeededRNG(seed);
 
-  const players = DEFAULT_PLAYERS_TEMPLATE.slice(0, clampedCount).map((tpl, idx) => {
-    const bulletIndex = Math.floor(rng() * 6);
-    return {
-      id: tpl.id,
-      seatIndex: idx,
-      name: idx === 0 ? (String(playerName || '').trim() || tpl.name) : tpl.name,
-      isAI: idx !== 0,
-      persona: tpl.persona,
-      avatarKey: idx === 0 ? (playerAvatar || 'human') : tpl.avatarKey,
-      titleVi: tpl.titleVi,
-      alive: true,
-      safeForRound: false,
-      hand: [],
-      revolver: {
-        chamberIndex: 0,
-        bulletIndex,
-        shotsTaken: 0,
-        maxChambers: 6
-      },
-      lastEmotion: 'neutral',
-      lastSpeech: '',
-      stats: {
-        cardsPlayed: 0,
-        bluffsMade: 0,
-        challengesCalled: 0,
-        challengesWon: 0,
-        triggersPulled: 0,
-        subRoundWins: 0,
-        miracleDodges: 0
-      }
-    };
-  });
+  let players;
+  if (Array.isArray(customPlayers) && customPlayers.length >= 2) {
+    players = customPlayers.slice(0, 4).map((cp, idx) => {
+      const bulletIndex = Math.floor(rng() * 6);
+      return {
+        id: cp.id,
+        seatIndex: idx,
+        name: String(cp.name || `Người chơi ${idx + 1}`).trim(),
+        isAI: Boolean(cp.isAI),
+        isHost: Boolean(cp.isHost),
+        disconnected: false,
+        persona: cp.persona || 'CALCULATED',
+        avatarKey: cp.avatarKey || 'human',
+        titleVi: cp.titleVi || (cp.isAI ? 'Bot Quán Rượu' : 'Người Chơi'),
+        alive: true,
+        safeForRound: false,
+        hand: [],
+        revolver: {
+          chamberIndex: 0,
+          bulletIndex,
+          shotsTaken: 0,
+          maxChambers: 6
+        },
+        lastEmotion: 'neutral',
+        lastSpeech: '',
+        stats: {
+          cardsPlayed: 0,
+          bluffsMade: 0,
+          challengesCalled: 0,
+          challengesWon: 0,
+          triggersPulled: 0,
+          subRoundWins: 0,
+          miracleDodges: 0
+        }
+      };
+    });
+  } else {
+    const clampedCount = Math.min(4, Math.max(2, Number(playerCount) || 4));
+    players = DEFAULT_PLAYERS_TEMPLATE.slice(0, clampedCount).map((tpl, idx) => {
+      const bulletIndex = Math.floor(rng() * 6);
+      return {
+        id: tpl.id,
+        seatIndex: idx,
+        name: idx === 0 ? (String(playerName || '').trim() || tpl.name) : tpl.name,
+        isAI: idx !== 0,
+        isHost: idx === 0,
+        disconnected: false,
+        persona: tpl.persona,
+        avatarKey: idx === 0 ? (playerAvatar || 'human') : tpl.avatarKey,
+        titleVi: tpl.titleVi,
+        alive: true,
+        safeForRound: false,
+        hand: [],
+        revolver: {
+          chamberIndex: 0,
+          bulletIndex,
+          shotsTaken: 0,
+          maxChambers: 6
+        },
+        lastEmotion: 'neutral',
+        lastSpeech: '',
+        stats: {
+          cardsPlayed: 0,
+          bluffsMade: 0,
+          challengesCalled: 0,
+          challengesWon: 0,
+          triggersPulled: 0,
+          subRoundWins: 0,
+          miracleDodges: 0
+        }
+      };
+    });
+  }
 
   const state = {
+    gameType: 'LIARS_DECK',
     roomId,
     roomName,
     seed: Number(seed) || 1337,
     rngStateCalls: 0,
     winMode: winMode === WIN_MODES.CLASSIC_SURVIVAL ? WIN_MODES.CLASSIC_SURVIVAL : WIN_MODES.EMPTY_HAND_WIN,
     includeDevil: Boolean(includeDevil),
+    devilProbability: Number(devilProbability ?? 0.30),
+    roundHasDevil: false,
     botDifficulty,
-    turnTimeSeconds: Number(turnTimeSeconds) || 30,
+    turnTimeSeconds: Number(turnTimeSeconds) || 60,
     roundNumber: 0,
     tableRank: 'K',
     phase: PHASES.LOBBY,
@@ -247,7 +292,7 @@ function recordEvent(state, type, payload = {}) {
   };
 }
 
-export function startNewRound(state) {
+export function startNewRound(state, options = {}) {
   if (state.phase === PHASES.GAME_OVER) {
     return state;
   }
@@ -273,7 +318,16 @@ export function startNewRound(state) {
   const tableIdx = Math.floor(nextRandom(state) * CARD_RANKS.length);
   state.tableRank = CARD_RANKS[tableIdx];
 
-  const rawDeck = buildDeck({ includeDevil: state.includeDevil });
+  // B1: 30% probability per sub-round that 1 Devil Card is in the deck (unless forced)
+  const hasDevil =
+    options.forceDevil !== undefined
+      ? Boolean(options.forceDevil)
+      : state.includeDevil
+      ? true
+      : nextRandom(state) < (state.devilProbability ?? 0.30);
+  state.roundHasDevil = hasDevil;
+
+  const rawDeck = buildDeck({ includeDevil: hasDevil });
   const shuffledDeck = shuffleArray(rawDeck, () => nextRandom(state));
 
   let deckCursor = 0;
@@ -421,6 +475,7 @@ export function playCards(state, playerId, cardIds, customSpeech = '') {
 
   recordEvent(state, 'PLAY_CARDS', {
     playerId: activePlayer.id,
+    seatIndex: activePlayer.seatIndex,
     playerName: activePlayer.name,
     cardCount: selectedCards.length,
     claimedRank: state.tableRank,
@@ -653,7 +708,7 @@ export function callLiar(state, callerId) {
  * Pulls the 6-chamber Russian Roulette revolver trigger for targetPlayerId.
  * Supports:
  * - Blank shot (Tách! Không có đạn)
- * - 1% Miracle Dodge (Bắn hụt 1%: Avatar thu nhỏ nhảy lên né viên đạn lướt qua, hiện "Hú hồn, né được nhé!")
+ * - 5% Miracle Dodge (Bắn hụt 5%: Avatar thu nhỏ nhảy lên né viên đạn lướt qua, hiện "Hú hồn, né được nhé!")
  * - Fatal shot (Đoàng! Viên đạn bắn vỡ Avatar người bị bắn, loại khỏi các ván sau)
  * - Match only ends when 1 survivor remains (alivePlayers.length === 1); otherwise transitions to ROUND_END to deal next round!
  */
@@ -666,6 +721,9 @@ export function pullTrigger(state, targetPlayerId, options = {}) {
   if (!targetPlayerIds.includes(targetPlayerId)) {
     throw new Error(`Người chơi ${targetPlayerId} không nằm trong danh sách phải bóp cò lúc này.`);
   }
+  if (targetPlayerIds[0] !== targetPlayerId) {
+    throw new Error(`Chưa tới lượt ${targetPlayerId} bóp cò (Đang chờ ${targetPlayerIds[0]}).`);
+  }
 
   const player = state.players.find((p) => p.id === targetPlayerId);
   if (!player || !player.alive) {
@@ -675,11 +733,12 @@ export function pullTrigger(state, targetPlayerId, options = {}) {
   const currentChamber = player.revolver.chamberIndex;
   const hitBullet = currentChamber === player.revolver.bulletIndex;
 
-  // 1% Miracle Dodge check when hitting the bullet (or across the 6-chamber cylinder)
+  // A: 5% "Hú hồn" miracle dodge when guaranteed to hit the bullet at the 6th chamber (index 5)
+  const isSixthChamber = currentChamber === 5;
   const dodgeRoll = nextRandom(state);
   const isMiracleDodge =
     options.forceDodge === true ||
-    (hitBullet && options.forceFatal !== true && dodgeRoll < 0.01);
+    (hitBullet && isSixthChamber && options.forceFatal !== true && dodgeRoll < 0.05);
 
   const isFatal = hitBullet && !isMiracleDodge;
 
@@ -697,7 +756,7 @@ export function pullTrigger(state, targetPlayerId, options = {}) {
     player.revolver.shotsTaken = 0;
     player.revolver.bulletIndex = Math.floor(nextRandom(state) * 6);
     player.lastEmotion = 'victory';
-    player.lastSpeech = 'Hú hồn, né được nhé!';
+    player.lastSpeech = 'Hú hồn, may mà né được, lêu lêu con gà kia!';
   } else if (isFatal) {
     outcomeType = 'FATAL';
     player.alive = false;
@@ -727,7 +786,7 @@ export function pullTrigger(state, targetPlayerId, options = {}) {
     appendLog(
       state,
       'ROULETTE_SHOT',
-      `[NÉ ĐẠN 1%!] Viên đạn nổ vang nhưng sượt qua tóc! ${player.name} nhảy vọt lên né đạn: "Hú hồn, né được nhé!"`,
+      `[NÉ ĐẠN 5%!] Viên đạn nổ vang nhưng sượt qua tóc! ${player.name} nhảy vọt lên né đạn: "Hú hồn, may mà né được, lêu lêu con gà kia!"`,
       state.lastRouletteResult
     );
   } else if (isFatal) {
@@ -815,10 +874,12 @@ export function getPublicState(state, viewerPlayerId = 'p0') {
     state.phase === PHASES.GAME_OVER;
 
   return {
+    gameType: state.gameType || 'LIARS_DECK',
     roomId: state.roomId,
     roomName: state.roomName,
     winMode: state.winMode,
     includeDevil: state.includeDevil,
+    roundHasDevil: Boolean(state.roundHasDevil),
     botDifficulty: state.botDifficulty,
     turnTimeSeconds: state.turnTimeSeconds,
     roundNumber: state.roundNumber,
@@ -864,6 +925,8 @@ export function getPublicState(state, viewerPlayerId = 'p0') {
       seatIndex: p.seatIndex,
       name: p.name,
       isAI: p.isAI,
+      isHost: Boolean(p.isHost),
+      disconnected: Boolean(p.disconnected),
       persona: p.persona,
       avatarKey: p.avatarKey,
       titleVi: p.titleVi,

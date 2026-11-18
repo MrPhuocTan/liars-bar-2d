@@ -13,47 +13,155 @@
       <div class="brand-group">
         <div class="pixel-logo-mark" aria-hidden="true"></div>
         <h1 class="brand-title">LIAR'S BAR 2D</h1>
-        <span class="brand-subtitle">ONLINE WEB VERSION</span>
+        <span class="brand-subtitle">MULTIPLAYER PIXEL</span>
       </div>
 
-      <div class="status-pills">
-        <span id="roomBadge" class="pixel-pill">#BAN-101</span>
-        <span id="roundBadge" class="pixel-pill gold">VÁN 1 • BÀN K</span>
-        <span id="modeBadge" class="pixel-pill green">ĐÁNH HẾT BÀI THẮNG + SÚNG LỤC</span>
+      <div class="status-pills" id="topStatusPills">
+        <span id="connStatusPill" class="pixel-pill gold">ĐANG KẾT NỐI...</span>
+        <span id="roomBadge" class="pixel-pill" style="display:none;">#PHÒNG</span>
+        <span id="roundBadge" class="pixel-pill gold" style="display:none;">VÁN 1</span>
       </div>
 
       <div class="nav-actions">
-        <button id="btnOpenLobby" type="button" class="pixel-btn">[PHÒNG] SẢNH</button>
-        <button id="btnQuickRestart" type="button" class="pixel-btn primary">[MỚI] VÁN MỚI</button>
         <button id="btnOpenRules" type="button" class="pixel-btn">[?] LUẬT</button>
         <button id="btnToggleSound" type="button" class="pixel-btn">[SFX] BẬT</button>
+        <button id="btnProfileCorner" type="button" class="profile-corner-btn" title="Hồ sơ & Lịch sử thắng thua">
+          <canvas id="headerAvatarCanvas" width="28" height="28" class="pixel-avatar-mini"></canvas>
+          <span id="headerPlayerName">Khách</span>
+        </button>
       </div>
     </header>
 
-    <!-- Main Workspace with Collapsible Right Drawer -->
-    <main id="workspaceGrid" class="workspace-grid drawer-closed">
-      <!-- Main Game Stage -->
+    <!-- Global Toast / Error Banner -->
+    <div id="toastBanner" class="toast-banner" style="display:none;" role="alert"></div>
+
+    <!-- =========================================================
+         VIEW 1: SẢNH (LOBBY)
+         ========================================================= -->
+    <section id="viewLobby" class="screen-section active">
+      <div class="lobby-container">
+        <div class="lobby-hero-bar">
+          <div>
+            <h2 class="section-heading">SẢNH QUÁN RƯỢU</h2>
+            <p class="section-sub">Chọn phòng công khai bên dưới, nhập mã mời phòng riêng, hoặc tạo bàn mới.</p>
+          </div>
+          <button id="btnOpenCreateRoom" type="button" class="pixel-btn primary lg">+ TẠO PHÒNG MỚI</button>
+        </div>
+
+        <!-- Find Private Room by Invite Code -->
+        <div class="find-room-card pixel-panel">
+          <div class="find-room-row">
+            <label for="inputInviteCode" class="find-label">TÌM PHÒNG PRIVATE (MÃ MỜI):</label>
+            <input
+              id="inputInviteCode"
+              type="text"
+              maxlength="10"
+              placeholder="Nhập mã mời (VD: LB7K)..."
+              class="pixel-input uppercase-input"
+            />
+            <button id="btnJoinByCode" type="button" class="pixel-btn gold">VÀO PHÒNG</button>
+          </div>
+          <div id="findRoomError" class="inline-error" style="display:none;"></div>
+        </div>
+
+        <!-- Public Rooms List (Realtime) -->
+        <div class="pixel-panel rooms-panel">
+          <div class="panel-heading">
+            <span>DANH SÁCH PHÒNG CÔNG KHAI (REALTIME)</span>
+            <span id="publicRoomsCount" class="pixel-pill">0 phòng</span>
+          </div>
+          <div id="lobbyLoadingState" class="empty-state" style="display:none;">Đang tải danh sách phòng...</div>
+          <div id="publicRoomsList" class="rooms-grid"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =========================================================
+         VIEW 2: PHÒNG CHỜ (WAITING ROOM)
+         ========================================================= -->
+    <section id="viewWaitingRoom" class="screen-section" style="display:none;">
+      <div class="waiting-container pixel-panel">
+        <div class="waiting-header">
+          <div>
+            <div class="waiting-badges">
+              <span id="waitGameBadge" class="pixel-pill gold">LIAR'S DECK</span>
+              <span id="waitPrivacyBadge" class="pixel-pill">CÔNG KHAI</span>
+              <span id="waitBotBadge" class="pixel-pill green" style="display:none;">CHƠI VỚI BOT</span>
+            </div>
+            <h2 id="waitRoomTitle" class="section-heading">Tên Phòng</h2>
+          </div>
+
+          <!-- Private Invite Code Box -->
+          <div id="waitInviteBox" class="invite-code-box" style="display:none;">
+            <span class="invite-label">MÃ MỜI:</span>
+            <strong id="waitInviteCodeText" class="invite-code-value">------</strong>
+            <button id="btnCopyInvite" type="button" class="pixel-btn gold sm">SAO CHÉP</button>
+          </div>
+        </div>
+
+        <div class="waiting-members-section">
+          <div class="panel-heading">
+            <span>NGƯỜI CHƠI TRONG PHÒNG</span>
+            <span id="waitMemberCount" class="pixel-pill">1/4</span>
+          </div>
+          <div id="waitMembersGrid" class="members-grid"></div>
+        </div>
+
+        <div class="waiting-footer">
+          <button id="btnLeaveWaiting" type="button" class="pixel-btn danger">RỜI PHÒNG</button>
+          <div class="waiting-start-wrap">
+            <span id="waitStartHint" class="wait-hint">Cần tối thiểu 2 người chơi để bắt đầu.</span>
+            <button id="btnStartMatch" type="button" class="pixel-btn success lg" disabled>
+              BẮT ĐẦU GAME
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =========================================================
+         VIEW 3: TRONG VÁN (IN-GAME)
+         ========================================================= -->
+    <main id="viewGame" class="workspace-grid drawer-closed" style="display:none;">
       <section class="stage-column">
         <div class="canvas-frame">
           <canvas id="tavernCanvas" width="900" height="480"></canvas>
 
-          <!-- Top-Right Corner Minimalist Revolver HUD inside Game Box -->
-          <div id="revolverCornerHud" class="revolver-corner-hud" aria-label="Tình trạng súng lục">
-            <div class="corner-hud-title">
-              <span>Ổ ĐẠN (6 NGĂN)</span>
-              <span id="aliveCountLabel">4/4</span>
-            </div>
-            <div id="playersRosterList" class="corner-hud-list"></div>
+          <!-- Center Big 60s Turn Timer (C5) -->
+          <div id="centerTurnTimer" class="center-turn-timer" aria-label="Thời gian còn lại của lượt">
+            <span class="timer-label">LƯỢT</span>
+            <span id="turnTimerValue" class="timer-digits">60</span>
+            <span class="timer-unit">s</span>
           </div>
 
+          <!-- Top-Right Scoreboard / Revolver HUD + Key Card Image Below (C5) -->
+          <div class="right-hud-stack">
+            <div id="revolverCornerHud" class="revolver-corner-hud" aria-label="Bảng điểm & Ổ đạn">
+              <div class="corner-hud-title">
+                <span>Ổ ĐẠN (6 NGĂN)</span>
+                <span id="aliveCountLabel">4/4</span>
+              </div>
+              <div id="playersRosterList" class="corner-hud-list"></div>
+            </div>
+
+            <!-- Key Card Visual Image Below Scoreboard (C5) -->
+            <div id="keyCardBox" class="key-card-hud-box">
+              <div class="key-card-hud-label" id="keyCardHudTitle">LÁ BÀI KEY</div>
+              <canvas id="keyCardCanvas" width="76" height="104" class="key-card-canvas"></canvas>
+              <div id="pokerStakeInfo" class="poker-stake-info" style="display:none;">
+                <span>CƯỢC: <strong id="pokerStakeVal">1</strong> ĐẠN</span>
+                <span id="pokerStreetVal">PREFLOP</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Top-Left Leave Room Button -->
+          <button id="btnLeaveMatch" type="button" class="leave-match-btn pixel-btn danger sm">
+            RỜI PHÒNG
+          </button>
+
           <!-- Toggle Button (> / <) to Open/Close Side Drawer -->
-          <button
-            id="btnToggleSidebar"
-            type="button"
-            class="drawer-toggle-btn"
-            title="Đóng / Mở khung Chat & Nhật ký"
-            aria-expanded="false"
-          >
+          <button id="btnToggleSidebar" type="button" class="drawer-toggle-btn" aria-expanded="false">
             &lt; CHAT / LOG
           </button>
         </div>
@@ -62,7 +170,7 @@
         <div id="phaseBanner" class="phase-banner">
           <div class="phase-copy">
             <div id="phaseHeadline" class="phase-text">Đang tải bàn chơi...</div>
-            <div id="phaseSubline" class="phase-subtext">Chọn 1 đến 3 lá bài trên tay để đánh úp hoặc hô LẬT BÀI đối thủ trước đó.</div>
+            <div id="phaseSubline" class="phase-subtext">Chờ lượt chơi...</div>
           </div>
           <div id="pileStatusBadge" class="pixel-pill gold">Tụ bài: 0 lá</div>
         </div>
@@ -70,180 +178,255 @@
         <!-- Bottom Player Hand & Action Dock -->
         <div class="player-dock">
           <div class="dock-header">
-            <span id="handHeaderTitle" class="dock-title">[BÀI TRÊN TAY: 5 LÁ] — Phím [1..5]</span>
+            <span id="handHeaderTitle" class="dock-title">[BÀI TRÊN TAY]</span>
             <span id="selectionPreviewBadge" class="selection-indicator">Chưa chọn lá nào</span>
           </div>
 
+          <!-- 2D Pixel Cards Container -->
           <div id="handCardsContainer" class="hand-cards-row"></div>
 
-          <div id="actionControlsBar" class="action-controls">
-            <button id="btnPlayCards" type="button" class="pixel-btn primary">
-              ĐÁNH BÀI ÚP [SPACE]
-            </button>
-            <button id="btnCallLiar" type="button" class="pixel-btn danger">
-              LẬT BÀI! / BẮT DỐI [L]
-            </button>
-            <button id="btnPassFinal" type="button" class="pixel-btn" style="display: none;">
-              CHO QUA (NHẬN THẮNG) [P]
-            </button>
-            <button id="btnPullTrigger" type="button" class="pixel-btn danger" style="display: none;">
-              BÓP CÒ SÚNG LỤC! [R]
-            </button>
-            <button id="btnNextRound" type="button" class="pixel-btn success" style="display: none;">
-              CHIA VÁN TIẾP THEO [ENTER]
-            </button>
-            <button id="btnClearSelection" type="button" class="pixel-btn">
-              BỎ CHỌN [X]
-            </button>
+          <!-- Liar's Deck Controls -->
+          <div id="liarsDeckControls" class="action-controls">
+            <button id="btnPlayCards" type="button" class="pixel-btn primary">ĐÁNH BÀI ÚP [SPACE]</button>
+            <button id="btnCallLiar" type="button" class="pixel-btn danger">BẮT LIAR! / LẬT BÀI [L]</button>
+            <button id="btnPassFinal" type="button" class="pixel-btn" style="display:none;">CHO QUA [P]</button>
+            <button id="btnPullTrigger" type="button" class="pixel-btn danger" style="display:none;">BÓP CÒ SÚNG LỤC! [R]</button>
+            <button id="btnClearSelection" type="button" class="pixel-btn">BỎ CHỌN [X]</button>
+          </div>
+
+          <!-- Poker Liar Bar Controls -->
+          <div id="pokerControls" class="action-controls" style="display:none;">
+            <button id="btnPokerCheckCall" type="button" class="pixel-btn primary">THEO / CHECK</button>
+            <div class="poker-raise-group">
+              <select id="selectPokerClaim" class="pixel-input sm">
+                <option value="1">Một Đôi</option>
+                <option value="2">Hai Đôi</option>
+                <option value="3">Sám Cô</option>
+                <option value="4">Sảnh</option>
+                <option value="5">Thùng</option>
+                <option value="6">Cù Lũ</option>
+                <option value="7">Tứ Quý</option>
+                <option value="8">Thùng Phá Sảnh</option>
+                <option value="9">Sảnh Chúa</option>
+              </select>
+              <button id="btnPokerRaise" type="button" class="pixel-btn gold">TĂNG CƯỢC (+1 ĐẠN)</button>
+            </div>
+            <button id="btnPokerAllIn" type="button" class="pixel-btn danger">ALL-IN (6 ĐẠN)</button>
+            <button id="btnPokerSwitch" type="button" class="pixel-btn">ĐỔI 1 LÁ (SWITCH)</button>
+            <button id="btnPokerCallBluff" type="button" class="pixel-btn danger">BẮT LIAR!</button>
+            <button id="btnPokerFold" type="button" class="pixel-btn">BỎ BÀI (1 ĐẠN)</button>
+            <button id="btnPokerPullTrigger" type="button" class="pixel-btn danger" style="display:none;">BÓP CÒ SÚNG LỤC!</button>
           </div>
         </div>
       </section>
 
-      <!-- Collapsible Right Drawer: Quick Chat & Match Log (Toggle ON/OFF via < / >) -->
+      <!-- Collapsible Right Drawer: Quick Chat & Match Log -->
       <aside id="sidebarDrawer" class="sidebar-column">
         <div class="drawer-top-bar">
-          <span class="drawer-top-title">BẢNG PHỤ (CHAT &amp; NHẬT KÝ)</span>
+          <span class="drawer-top-title">CHAT &amp; NHẬT KÝ</span>
           <button id="btnCloseSidebarInner" type="button" class="pixel-btn">&gt; THU GỌN</button>
         </div>
-
-        <!-- 1. Quick Chat / Psychological Taunts -->
-        <div id="sidePanelChat" class="pixel-panel">
-          <div class="panel-heading">
-            <span>CHAT NHANH TRÊN BÀN</span>
-          </div>
+        <div class="pixel-panel">
+          <div class="panel-heading"><span>CHAT NHANH</span></div>
           <div class="quick-chat-grid">
-            <button type="button" class="chat-chip" data-chat="100% bài thật nhé, đừng dại mà lật!">
-              "100% bài thật nhé!"
-            </button>
-            <button type="button" class="chat-chip" data-chat="Giỏi thì hô LẬT BÀI xem ai nổ súng?!">
-              "Giỏi thì LẬT BÀI đi!"
-            </button>
-            <button type="button" class="chat-chip" data-chat="Tay đang run cầm cập rồi kìa...">
-              "Tay đang run kìa..."
-            </button>
-            <button type="button" class="chat-chip" data-chat="Lượt này tôi đánh hết bài thắng luôn nhé!">
-              "Đánh hết bài thắng luôn!"
-            </button>
+            <button type="button" class="chat-chip" data-chat="100% bài thật nhé!">"100% bài thật!"</button>
+            <button type="button" class="chat-chip" data-chat="Giỏi thì Bắt Liar xem!">"Giỏi thì Bắt Liar!"</button>
+            <button type="button" class="chat-chip" data-chat="Lần này tôi không nói dối đâu!">"Không nói dối đâu!"</button>
+            <button type="button" class="chat-chip" data-chat="Run tay chưa con gà?!">"Run tay chưa?!"</button>
           </div>
-          <form id="customChatForm" class="custom-chat-row">
-            <input
-              id="customChatInput"
-              type="text"
-              class="pixel-input"
-              maxlength="80"
-              placeholder="Nhập câu khiêu khích..."
-            />
-            <button type="submit" class="pixel-btn">GỬI</button>
-          </form>
         </div>
-
-        <!-- 2. Match Action Log -->
-        <div id="sidePanelLog" class="pixel-panel log-panel-flex">
-          <div class="panel-heading">
-            <span>NHẬT KÝ VÁN ĐẤU</span>
-            <span id="logCountBadge">0 mục</span>
-          </div>
-          <div id="actionLogContainer" class="action-log-list"></div>
+        <div class="pixel-panel log-panel">
+          <div class="panel-heading"><span>NHẬT KÝ VÁN ĐẤU</span></div>
+          <div id="actionLogList" class="action-log-list"></div>
         </div>
       </aside>
     </main>
   </div>
 
-  <!-- Modal 1: Lobby & Custom Room Setup -->
-  <div id="lobbyModal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
-    <div class="modal-box">
+  <!-- =========================================================
+       MODAL 1: TẠO TÊN & CHỌN AVATAR (LẦN ĐẦU VÀO WEB) (C1)
+       ========================================================= -->
+  <div id="profileSetupModal" class="modal-backdrop" style="display:none;">
+    <div class="modal-card pixel-panel">
       <div class="modal-header">
-        <h2 class="modal-title">[SẢNH PHÒNG] CHỌN BÀN HOẶC TẠO BÀN MỚI</h2>
-        <button id="btnCloseLobby" type="button" class="pixel-btn">ĐÓNG [X]</button>
+        <h2 class="modal-title">CHÀO MỪNG ĐẾN LIAR'S BAR 2D</h2>
       </div>
-
-      <div>
-        <h3 style="font-size: 0.85rem; color: var(--accent-gold); margin-bottom: 8px;">
-          DANH SÁCH BÀN ĐANG MỞ (BẤM ĐỂ VÀO NGAY)
-        </h3>
-        <div id="publicRoomsList" class="rooms-list"></div>
+      <div class="modal-body">
+        <p class="modal-desc">Tạo tên nhân vật và chọn Avatar pixel của bạn để bắt đầu vào Sảnh:</p>
+        <div class="form-group">
+          <label for="setupNameInput">TÊN NGƯỜI CHƠI (2 - 24 ký tự):</label>
+          <input id="setupNameInput" type="text" maxlength="24" placeholder="Nhập tên của bạn..." class="pixel-input" />
+        </div>
+        <div class="form-group">
+          <label>CHỌN AVATAR PIXEL:</label>
+          <div id="setupAvatarGrid" class="avatar-picker-grid"></div>
+        </div>
+        <div id="setupError" class="inline-error" style="display:none;"></div>
       </div>
-
-      <form id="createRoomForm" style="border-top: 2px solid var(--border-wood); padding-top: 12px; display: flex; flex-direction: column; gap: 10px;">
-        <h3 style="font-size: 0.85rem; color: var(--accent-gold);">
-          TÙY CHỈNH TẠO BÀN CHƠI MỚI
-        </h3>
-        <div class="form-grid">
-          <label class="form-field">
-            <span>Tên nhân vật của bạn:</span>
-            <input id="inputPlayerName" type="text" class="pixel-input" value="Bạn (Tay Chơi)" maxlength="24" />
-          </label>
-          <label class="form-field">
-            <span>Tên phòng / bàn rượu:</span>
-            <input id="inputRoomName" type="text" class="pixel-input" value="Quán Rượu Đêm Khuya" maxlength="40" />
-          </label>
-          <label class="form-field">
-            <span>Chế độ chiến thắng:</span>
-            <select id="selectWinMode" class="pixel-select">
-              <option value="EMPTY_HAND_WIN" selected>Đánh Hết Bài Là Thắng + Bắn Súng Lục (Mặc định)</option>
-              <option value="CLASSIC_SURVIVAL">Sinh Tử Cổ Điển (Sống Sót Cuối Cùng)</option>
-            </select>
-          </label>
-          <label class="form-field">
-            <span>Biến thể Lá Ác Quỷ (Devil Card):</span>
-            <select id="selectDevilMode" class="pixel-select">
-              <option value="false" selected>Bộ Chuẩn 20 Lá (6K, 6Q, 6A, 2 Joker)</option>
-              <option value="true">Có Lá Ác Quỷ (6K, 6Q, 6A, 1 Joker, 1 Devil)</option>
-            </select>
-          </label>
-          <label class="form-field">
-            <span>Hình đại diện Pixel:</span>
-            <select id="selectAvatar" class="pixel-select">
-              <option value="human" selected>Tay Chơi Mũ Phớt (Human)</option>
-              <option value="fox">Cáo Đỏ (Fox)</option>
-              <option value="wolf">Sói Xám (Wolf)</option>
-              <option value="pig">Heo Rừng (Boar)</option>
-            </select>
-          </label>
-          <label class="form-field">
-            <span>Độ khó AI:</span>
-            <select id="selectBotDifficulty" class="pixel-select">
-              <option value="NORMAL" selected>Chuẩn (Normal)</option>
-              <option value="HARD">Cao Thủ Đếm Bài (Hard)</option>
-              <option value="EASY">Tập Sự (Easy)</option>
-            </select>
-          </label>
-        </div>
-        <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px;">
-          <button type="submit" class="pixel-btn primary">TẠO BÀN &amp; BẮT ĐẦU CHƠI</button>
-        </div>
-      </form>
+      <div class="modal-footer right">
+        <button id="btnSaveSetupProfile" type="button" class="pixel-btn primary lg">VÀO SẢNH NGAY</button>
+      </div>
     </div>
   </div>
 
-  <!-- Modal 2: Rules & Mechanics Guide -->
-  <div id="rulesModal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
-    <div class="modal-box">
+  <!-- =========================================================
+       MODAL 2: SỬA HỒ SƠ & LỊCH SỬ THẮNG THUA (C1)
+       ========================================================= -->
+  <div id="profileHistoryModal" class="modal-backdrop" style="display:none;">
+    <div class="modal-card pixel-panel wide">
       <div class="modal-header">
-        <h2 class="modal-title">[LUẬT CHƠI] LIAR'S BAR 2D (BÀI NÓI DỐI &amp; SÚNG LỤC)</h2>
-        <button id="btnCloseRules" type="button" class="pixel-btn">ĐÓNG [X]</button>
+        <h2 class="modal-title">HỒ SƠ &amp; LỊCH SỬ THẮNG THUA</h2>
+        <button id="btnCloseProfileModal" type="button" class="pixel-btn sm">ĐÓNG</button>
       </div>
-      <div class="rules-content">
-        <div class="rules-section">
-          <strong>1. Bộ Bài 20 Lá &amp; Bàn Bài Chủ (K / Q / A):</strong><br />
-          Bộ bài gồm <strong>6 lá K (Già)</strong>, <strong>6 lá Q (Đầm)</strong>, <strong>6 lá A (Át)</strong> và <strong>2 lá Joker (Vạn năng — luôn tính là bài thật)</strong>. Đầu mỗi ván, hệ thống chọn ngẫu nhiên Bài Chủ là <strong>BÀN K</strong>, <strong>BÀN Q</strong> hoặc <strong>BÀN A</strong> và chia cho mỗi người <strong>5 lá bài</strong>.
+      <div class="modal-body">
+        <div class="profile-stats-row">
+          <div class="stat-box"><span class="stat-num" id="statTotalMatches">0</span><span class="stat-lbl">TỔNG TRẬN</span></div>
+          <div class="stat-box win"><span class="stat-num" id="statWins">0</span><span class="stat-lbl">THẮNG</span></div>
+          <div class="stat-box loss"><span class="stat-num" id="statLosses">0</span><span class="stat-lbl">THUA</span></div>
+          <div class="stat-box gold"><span class="stat-num" id="statWinRate">0%</span><span class="stat-lbl">TỈ LỆ THẮNG</span></div>
         </div>
-        <div class="rules-section">
-          <strong>2. Đánh Bài Úp (1–3 Lá) &amp; Hô "LẬT BÀI!" (Call Liar):</strong><br />
-          Tới lượt, bạn chọn từ <strong>1 đến 3 lá bài</strong> đặt úp xuống bàn và tuyên bố tất cả đều trùng Bài Chủ. Người kế tiếp có thể đánh tiếp hoặc hô <strong>"LẬT BÀI!"</strong>:<br />
-          - Nếu có ít nhất 1 lá <strong>KHÔNG</strong> khớp Bài Chủ (và không phải Joker) -&gt; <strong>Kẻ nói dối</strong> phải tự rút súng lục bóp cò!<br />
-          - Nếu tất cả lá vừa lật đều là <strong>BÀI THẬT</strong> -&gt; <strong>Người hô Lật Bài sai</strong> phải tự rút súng lục bóp cò!
+
+        <div class="form-group">
+          <label for="editNameInput">ĐỔI TÊN NGƯỜI CHƠI:</label>
+          <div class="inline-row">
+            <input id="editNameInput" type="text" maxlength="24" class="pixel-input" />
+            <button id="btnUpdateProfile" type="button" class="pixel-btn primary">LƯU THAY ĐỔI</button>
+          </div>
         </div>
-        <div class="rules-section">
-          <strong>3. Cơ Chế "Đánh Hết Bài Là Win" (Empty-Hand Victory):</strong><br />
-          Khi một người đánh xuống những lá bài cuối cùng trên tay (về <strong>0 lá</strong>), người kế tiếp bước vào <strong>Cơ Hội Xét Bài Cuối</strong>:<br />
-          - Nếu đối phương chọn <strong>"CHO QUA"</strong> hoặc hô <strong>"LẬT BÀI"</strong> nhưng loạt bài cuối là <strong>THẬT 100%</strong> -&gt; Người đánh hết bài <strong>THẮNG NGAY LẬP TỨC</strong>!<br />
-          - Nếu loạt bài cuối bị bắt quả tang là <strong>NÓI DỐI</strong> -&gt; Chiến thắng bị chặn đứng và kẻ nói dối phải rút súng lục tự bắn!
+        <div class="form-group">
+          <label>ĐỔI AVATAR:</label>
+          <div id="editAvatarGrid" class="avatar-picker-grid"></div>
         </div>
-        <div class="rules-section">
-          <strong>4. Súng Lục Cò Quay Nga 6 Ngăn (1/6 -&gt; 6/6) &amp; Lá Ác Quỷ (Devil):</strong><br />
-          Mỗi người có 1 khẩu súng 6 ngăn chứa <strong>1 viên đạn thật</strong>. Mỗi lần bóp cò trượt (<strong>CẠCH!</strong>), tỉ lệ chết ở lần sau tăng dần (<code>1/6 -&gt; 1/5 -&gt; 1/4 -&gt; 1/3 -&gt; 1/2 -&gt; 1/1</code>). Nếu trúng đạn (<strong>ĐOÀNG!</strong>), người đó bị loại ngay. Nếu chỉ còn 1 người sống sót, người đó thắng tuyệt đối! Khi bật <strong>Lá Ác Quỷ (Devil)</strong>, lá này chỉ được đánh lẻ 1 lá; ai lật trúng lá Ác Quỷ sẽ khiến toàn bộ bàn (trừ người đánh) phải đồng loạt bóp cò!
+
+        <div class="history-section">
+          <div class="panel-heading"><span>LỊCH SỬ ĐẤU GẦN ĐÂY</span></div>
+          <div id="matchHistoryList" class="history-list"></div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- =========================================================
+       MODAL 3: TẠO PHÒNG (C3) — Nút Tạo phòng ở góc dưới cùng bên trái!
+       ========================================================= -->
+  <div id="createRoomModal" class="modal-backdrop" style="display:none;">
+    <div class="modal-card pixel-panel">
+      <div class="modal-header">
+        <h2 class="modal-title">TẠO PHÒNG MỚI</h2>
+        <button id="btnCloseCreateRoom" type="button" class="pixel-btn sm">ĐÓNG</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>CHỌN GAME:</label>
+          <div class="radio-card-row">
+            <label class="radio-card">
+              <input type="radio" name="createGameType" value="LIARS_DECK" checked />
+              <span><strong>Liar's Deck</strong><small>Bài Nói Dối + Devil (30%)</small></span>
+            </label>
+            <label class="radio-card">
+              <input type="radio" name="createGameType" value="POKER_LIAR_BAR" />
+              <span><strong>Poker Liar Bar</strong><small>Poker Cược Bằng Đạn</small></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="createRoomName">TÊN PHÒNG:</label>
+          <input id="createRoomName" type="text" maxlength="40" placeholder="VD: Bàn Quán Rượu Đêm..." class="pixel-input" />
+        </div>
+
+        <div class="form-group">
+          <label class="checkbox-row">
+            <input id="createIsPrivate" type="checkbox" />
+            <span>Phòng Private (Ẩn khỏi sảnh, vào bằng mã mời)</span>
+          </label>
+        </div>
+
+        <div class="form-group">
+          <label>CHẾ ĐỘ CHƠI:</label>
+          <div class="radio-card-row">
+            <label class="radio-card">
+              <input type="radio" name="createPlayMode" value="HUMANS" checked />
+              <span><strong>Chơi với người</strong><small>Tối đa 4 người thật</small></span>
+            </label>
+            <label class="radio-card">
+              <input type="radio" name="createPlayMode" value="BOTS" />
+              <span><strong>Chơi với bot</strong><small>Luyện tập cùng AI</small></span>
+            </label>
+          </div>
+        </div>
+
+        <div id="botOptionsGroup" class="bot-options-box" style="display:none;">
+          <div class="form-group">
+            <label>SỐ LƯỢNG BOT:</label>
+            <div class="bot-count-row">
+              <label class="chip-radio"><input type="radio" name="createBotCount" value="1" checked /> 1 Bot</label>
+              <label class="chip-radio"><input type="radio" name="createBotCount" value="2" /> 2 Bot</label>
+              <label class="chip-radio"><input type="radio" name="createBotCount" value="3" /> 3 Bot</label>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="createBotDifficulty">ĐỘ THÔNG MINH CỦA BOT:</label>
+            <select id="createBotDifficulty" class="pixel-input">
+              <option value="GRADE_5">Học sinh lớp 5</option>
+              <option value="MATH_MASTER" selected>Thạc sĩ toán học</option>
+              <option value="PROFESSOR_NGAU">Giáo sư Ngâu</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- C3: Nút Tạo phòng nằm ở góc dưới cùng bên trái -->
+      <div class="modal-footer left-primary">
+        <button id="btnSubmitCreateRoom" type="button" class="pixel-btn primary lg">TẠO PHÒNG</button>
+        <button id="btnCancelCreateRoom" type="button" class="pixel-btn">HỦY</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- =========================================================
+       MODAL 4: XÁC NHẬN RỜI PHÒNG GIỮA VÁN (F)
+       ========================================================= -->
+  <div id="leaveConfirmModal" class="modal-backdrop" style="display:none;">
+    <div class="modal-card pixel-panel">
+      <div class="modal-header">
+        <h2 class="modal-title">XÁC NHẬN RỜI PHÒNG</h2>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">Bạn đang ở trong một ván lớn chưa kết thúc. Nếu rời phòng ngay bây giờ, bạn sẽ bị <strong>tính THUA</strong> trận này!</p>
+      </div>
+      <div class="modal-footer right">
+        <button id="btnCancelLeave" type="button" class="pixel-btn">Ở LẠI CHƠI TIẾP</button>
+        <button id="btnConfirmLeave" type="button" class="pixel-btn danger">CHẤP NHẬN THUA &amp; RỜI</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- =========================================================
+       MODAL 5: LUẬT CHƠI (RULES)
+       ========================================================= -->
+  <div id="rulesModal" class="modal-backdrop" style="display:none;">
+    <div class="modal-card pixel-panel wide">
+      <div class="modal-header">
+        <h2 class="modal-title">LUẬT CHƠI LIAR'S BAR 2D</h2>
+        <button id="btnCloseRules" type="button" class="pixel-btn sm">ĐÓNG</button>
+      </div>
+      <div class="modal-body rules-body">
+        <h3>A. Luật chung</h3>
+        <ul>
+          <li><strong>Ván lớn</strong> gồm nhiều <strong>Ván con</strong>, kết thúc khi chỉ còn 1 người sống sót cuối cùng.</li>
+          <li>Phạt bằng súng lục 6 ngăn (1/6 &rarr; 6/6). Ở mốc viên thứ 6 chắc chắn trúng đạn có <strong>5% tỉ lệ "Hú hồn"</strong> né đạn thần kỳ!</li>
+        </ul>
+        <h3>B1. Liar's Deck (Bài Nói Dối)</h3>
+        <ul>
+          <li>Bộ bài 20 lá (6 K, 6 Q, 6 A, 2 Joker). Mỗi ván con có <strong>30% xác suất</strong> xuất hiện <strong>1 lá Devil Card</strong> duy nhất.</li>
+          <li>Đánh 1–3 lá úp và hô theo bài Key của bàn, hoặc hô <strong>Bắt Liar!</strong> người trước đó.</li>
+        </ul>
+        <h3>B2. Poker Liar Bar</h3>
+        <ul>
+          <li>Mỗi người có 2 lá tẩy riêng + 5 lá chung (Flop, Turn, River). Cược bằng <strong>số viên đạn</strong> (1–6).</li>
+          <li>Có thể <strong>Theo/Check</strong>, <strong>Tăng cược</strong> (kèm tuyên bố tay bài Poker), <strong>All-In</strong>, <strong>Switch</strong> (đổi 1 lá tẩy, không được All-In cùng lượt Switch), <strong>Bắt Liar</strong> hoặc <strong>Bỏ bài</strong> (chịu 1 phát đạn).</li>
+        </ul>
       </div>
     </div>
   </div>

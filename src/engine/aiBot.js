@@ -7,6 +7,16 @@
  */
 
 import { PHASES, SPECIAL_CARDS, WIN_MODES } from './gameEngine.js';
+import { evaluateBestPokerHand } from './pokerEngine.js';
+
+export const BOT_DIFFICULTIES = {
+  GRADE_5: { key: 'GRADE_5', labelVi: 'Học sinh lớp 5', multiplier: 0.65 },
+  MATH_MASTER: { key: 'MATH_MASTER', labelVi: 'Thạc sĩ toán học', multiplier: 1.15 },
+  PROFESSOR_NGAU: { key: 'PROFESSOR_NGAU', labelVi: 'Giáo sư Ngâu', multiplier: 1.45 },
+  EASY: { key: 'EASY', labelVi: 'Học sinh lớp 5', multiplier: 0.75 },
+  NORMAL: { key: 'NORMAL', labelVi: 'Thạc sĩ toán học', multiplier: 1.0 },
+  HARD: { key: 'HARD', labelVi: 'Giáo sư Ngâu', multiplier: 1.25 }
+};
 
 export const AI_PERSONAS = {
   CALCULATED: {
@@ -72,7 +82,7 @@ export function chooseAIAction(state, aiPlayerId, customRng = null) {
 
   const personaCfg = AI_PERSONAS[aiPlayer.persona] || AI_PERSONAS.CALCULATED;
   const difficultyMultiplier =
-    state.botDifficulty === 'HARD' ? 1.25 : state.botDifficulty === 'EASY' ? 0.75 : 1.0;
+    (BOT_DIFFICULTIES[state.botDifficulty] || BOT_DIFFICULTIES.MATH_MASTER).multiplier;
 
   // Count how many truthful cards (tableRank + Joker) this AI holds in its own hand
   const matchingInHand = aiPlayer.hand.filter(
@@ -84,7 +94,7 @@ export function chooseAIAction(state, aiPlayerId, customRng = null) {
   const devilCardInHand = aiPlayer.hand.find((c) => c.rank === SPECIAL_CARDS.DEVIL);
 
   // Maximum truthful cards in the entire 20-card deck = 6 tableRank + (1 or 2 Jokers) = 7 or 8
-  const maxPossibleTruthfulInDeck = state.includeDevil ? 7 : 8;
+  const maxPossibleTruthfulInDeck = (state.roundHasDevil || state.includeDevil) ? 7 : 8;
 
   // Phase 1: FINAL_CHALLENGE_WINDOW (Someone just emptied their hand or only 1 player has cards left!)
   if (state.phase === PHASES.FINAL_CHALLENGE_WINDOW) {
@@ -253,4 +263,70 @@ export function chooseAIAction(state, aiPlayerId, customRng = null) {
   }
 
   throw new Error(`Không thể tính nước đi AI cho giai đoạn ${state.phase}.`);
+}
+
+export function choosePokerAIAction(state, aiPlayerId, customRng = null) {
+  const rng =
+    typeof customRng === 'function'
+      ? customRng
+      : typeof state._rng === 'function'
+      ? state._rng
+      : Math.random;
+
+  if (state.phase === PHASES.ROULETTE_PENALTY) {
+    if (state.pendingPenalty?.targetPlayerId === aiPlayerId) {
+      return { action: 'PULL_TRIGGER', playerId: aiPlayerId };
+    }
+  }
+
+  if (state.phase === PHASES.ROUND_END) {
+    return { action: 'NEXT_ROUND', playerId: aiPlayerId };
+  }
+
+  const aiPlayer = state.players.find((p) => p.id === aiPlayerId);
+  if (!aiPlayer || !aiPlayer.alive || aiPlayer.folded) {
+    throw new Error(`Poker AI ${aiPlayerId} không hợp lệ hoặc đã bỏ bài.`);
+  }
+
+  const diffMult = (BOT_DIFFICULTIES[state.botDifficulty] || BOT_DIFFICULTIES.MATH_MASTER).multiplier;
+  const revealedCommunity = state.communityCards.slice(0, state.revealedCommunityCount);
+  const myEval = evaluateBestPokerHand([...aiPlayer.hand, ...revealedCommunity]);
+
+  // Consider calling bluff if previous claim is suspiciously high
+  if (state.lastClaim && state.lastClaim.playerId !== aiPlayerId) {
+    const claimedRank = state.lastClaim.handRank;
+    const bluffThreshold = claimedRank >= 4 ? 0.55 : claimedRank >= 2 ? 0.25 : 0.10;
+    if (rng() < bluffThreshold * Math.min(1.2, diffMult)) {
+      return { action: 'CALL_BLUFF', playerId: aiPlayerId };
+    }
+  }
+
+  // Consider using Switch if hand is weak (High Card) and switches remain
+  if (aiPlayer.switchesLeft > 0 && myEval.category === 0 && !aiPlayer.usedSwitchThisTurn && rng() < 0.45) {
+    const lowestCard = [...aiPlayer.hand].sort((a, b) => a.value - b.value)[0];
+    return { action: 'SWITCH', playerId: aiPlayerId, cardId: lowestCard?.id };
+  }
+
+  // Fold if stake is very high (>= 4) and hand is weak and revolver is risky
+  if (state.currentStake >= 4 && myEval.category === 0 && aiPlayer.revolver.shotsTaken >= 3 && rng() < 0.35) {
+    return { action: 'FOLD', playerId: aiPlayerId };
+  }
+
+  // Raise or bluff raise
+  const canRaise = state.currentStake < 6;
+  const wantRaise =
+    canRaise &&
+    ((myEval.category >= 2 && rng() < 0.45 * diffMult) || (rng() < 0.18 * diffMult));
+
+  if (wantRaise) {
+    const minClaim = state.lastClaim ? state.lastClaim.handRank : 1;
+    const claimRank = Math.min(9, Math.max(minClaim, myEval.category + (rng() < 0.35 ? 1 : 0)));
+    return {
+      action: 'RAISE',
+      playerId: aiPlayerId,
+      claimedHandRank: claimRank
+    };
+  }
+
+  return { action: 'CHECK_CALL', playerId: aiPlayerId };
 }

@@ -8,7 +8,7 @@
  * - Single Card Flip (lật từng lá khi bắt bài)
  * - Cylinder Spin & Dry Tick (xoay ổ đạn & tiếng tích khi không có đạn)
  * - Gunshot & Avatar Shatter (bắn vỡ avatar)
- * - Miracle Dodge Jump ("Hú hồn, né được nhé!")
+ * - Miracle Dodge Jump 5% ("Hú hồn, may mà né được, lêu lêu con gà kia!")
  */
 
 export class PixelSoundFX {
@@ -132,6 +132,13 @@ export class PixelSoundFX {
     }
   }
 
+  cardSlam() {
+    // Heavy table slam "RẦM!"
+    this.playNoise(0.22, 0.28, 650, 0);
+    this.playTone(95, 0.22, 'sawtooth', 0.22, 0);
+    this.playTone(55, 0.26, 'square', 0.2, 0.03);
+  }
+
   cardFlip(isTruth = true) {
     this.playNoise(0.05, 0.08, 2400, 0);
     this.playTone(isTruth ? 783.99 : 233.08, 0.16, 'square', 0.09, 0.04);
@@ -167,7 +174,7 @@ export class PixelSoundFX {
   }
 
   dodgeJump() {
-    // Gunshot + Mario/retro jump whoosh ("Hú hồn, né được nhé!")
+    // Gunshot + Mario/retro jump whoosh 5% ("Hú hồn, may mà né được, lêu lêu con gà kia!")
     this.playNoise(0.22, 0.2, 1200, 0);
     this.playSweep(280, 920, 0.22, 'square', 0.11, 0.05);
     this.playTone(1046.5, 0.18, 'square', 0.1, 0.28);

@@ -163,7 +163,7 @@ test('AC-05: Progressive 6-Chamber Russian Roulette (BLANK, FATAL, and 1% MIRACL
   assert.equal(victim.alive, true);
   assert.equal(match.lastRouletteResult.outcomeType, 'DODGE');
   assert.equal(match.lastRouletteResult.isMiracleDodge, true);
-  assert.equal(victim.lastSpeech, 'Hú hồn, né được nhé!');
+  assert.equal(victim.lastSpeech, 'Hú hồn, may mà né được, lêu lêu con gà kia!');
   assert.equal(match.phase, PHASES.ROUND_END);
 
   // Test Fatal Shot
@@ -215,7 +215,7 @@ test('AC-06: Tactical AI Bot makes valid moves across all game phases', () => {
 });
 
 test('AC-09: Full-Stack HTTP Server & REST API contract verification', async () => {
-  const server = createAppServer();
+  const server = createAppServer({ dbPath: ':memory:' });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address();
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -262,4 +262,36 @@ test('AC-09: Full-Stack HTTP Server & REST API contract verification', async () 
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test('AC-10: 30% Devil Card per sub-round (only 1 Devil) & 5% Hú hồn on 6th chamber', () => {
+  let devilRounds = 0;
+  const totalTrials = 200;
+  const match = createMatchState({ seed: 98765, includeDevil: false, devilProbability: 0.30 });
+  for (let i = 0; i < totalTrials; i += 1) {
+    startNewRound(match);
+    const devilsInHands = match.players
+      .flatMap((p) => p.hand)
+      .filter((c) => c.rank === SPECIAL_CARDS.DEVIL);
+    assert.ok(devilsInHands.length <= 1, 'Devil card must appear at most once per sub-round');
+    if (match.roundHasDevil) devilRounds += 1;
+  }
+  const ratio = devilRounds / totalTrials;
+  assert.ok(ratio >= 0.18 && ratio <= 0.42, `Expected ~30% Devil rounds, got ${ratio}`);
+
+  // Test 5% Hú hồn on 6th chamber (chamberIndex === 5)
+  let dodges = 0;
+  for (let t = 0; t < 400; t += 1) {
+    const m = createMatchState({ seed: 1000 + t, playerCount: 2 });
+    const victim = m.players[1];
+    victim.revolver.chamberIndex = 5;
+    victim.revolver.bulletIndex = 5;
+    victim.revolver.shotsTaken = 5;
+    m.phase = PHASES.ROULETTE_PENALTY;
+    m.pendingPenalty = { targetPlayerIds: ['p1'], verdictTag: 'FAKE', wasLying: true };
+    pullTrigger(m, 'p1');
+    if (m.lastRouletteResult.isMiracleDodge) dodges += 1;
+  }
+  const dodgeRate = dodges / 400;
+  assert.ok(dodgeRate > 0.01 && dodgeRate < 0.12, `Expected ~5% dodge on 6th chamber, got ${dodgeRate}`);
 });

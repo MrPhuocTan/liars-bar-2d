@@ -1,690 +1,957 @@
-/**
- * Liar's Bar 2D — Online Web Version Main Controller
- * Coordinates step-by-step 2D Pixel Cutscenes (Deal & Shuffle, Play Cards Zoom,
- * Challenge One-by-One Flip, Russian Roulette Spin/Shatter/Blank/1% Dodge)
- * and Multi-Round Elimination Pacing.
- */
-
 import { PixelTableRenderer } from './pixelRenderer.js';
 import { PixelSoundFX } from './soundFX.js';
+import { AVATAR_LIST, drawPixelAvatar, drawPixelCard } from './cardArt.js';
+
+const TOKEN_STORAGE_KEY = 'lb_player_token';
+
+const appState = {
+  ws: null,
+  player: null,
+  currentView: 'LOBBY', // 'LOBBY' | 'WAITING' | 'GAME'
+  rooms: [],
+  waitingRoom: null,
+  gameState: null,
+  selectedCardIds: [],
+  selectedSetupAvatar: 'human',
+  selectedEditAvatar: 'human',
+  lastEventSeq: 0,
+  animQueue: [],
+  isAnimating: false,
+  timerInterval: null,
+  clockOffsetMs: 0
+};
 
 const sound = new PixelSoundFX();
-const canvas = document.getElementById('tavernCanvas');
-const renderer = new PixelTableRenderer(canvas, sound);
-renderer.startLoop();
+let renderer = null;
 
-let currentState = null;
-let selectedCardIds = new Set();
-let aiTimerId = null;
-let autoRoundTimerId = null;
-let isRequestInFlight = false;
-let lastProcessedEventSeq = -1;
+// =========================================================================
+// DOM HELPERS & TOAST
+// =========================================================================
+const $ = (id) => document.getElementById(id);
 
-// DOM Elements
-const roomBadge = document.getElementById('roomBadge');
-const roundBadge = document.getElementById('roundBadge');
-const modeBadge = document.getElementById('modeBadge');
-const phaseBanner = document.getElementById('phaseBanner');
-const phaseHeadline = document.getElementById('phaseHeadline');
-const phaseSubline = document.getElementById('phaseSubline');
-const pileStatusBadge = document.getElementById('pileStatusBadge');
-const handHeaderTitle = document.getElementById('handHeaderTitle');
-const selectionPreviewBadge = document.getElementById('selectionPreviewBadge');
-const handCardsContainer = document.getElementById('handCardsContainer');
-
-const btnPlayCards = document.getElementById('btnPlayCards');
-const btnCallLiar = document.getElementById('btnCallLiar');
-const btnPassFinal = document.getElementById('btnPassFinal');
-const btnPullTrigger = document.getElementById('btnPullTrigger');
-const btnNextRound = document.getElementById('btnNextRound');
-const btnClearSelection = document.getElementById('btnClearSelection');
-
-const aliveCountLabel = document.getElementById('aliveCountLabel');
-const playersRosterList = document.getElementById('playersRosterList');
-const actionLogContainer = document.getElementById('actionLogContainer');
-const logCountBadge = document.getElementById('logCountBadge');
-
-const lobbyModal = document.getElementById('lobbyModal');
-const rulesModal = document.getElementById('rulesModal');
-const publicRoomsList = document.getElementById('publicRoomsList');
-
-async function apiRequest(url, method = 'GET', body = null) {
-  const options = {
-    method,
-    headers: { 'Content-Type': 'application/json' }
-  };
-  if (body) {
-    options.body = JSON.stringify(body);
-  }
-  const res = await fetch(url, options);
-  const data = await res.json();
-  if (!res.ok || data.ok === false) {
-    throw new Error(data.error || `HTTP ${res.status}`);
-  }
-  return data;
+function showToast(msg, isInfo = false) {
+  const el = $('toastBanner');
+  if (!el) return;
+  el.textContent = msg;
+  el.className = isInfo ? 'toast-banner info' : 'toast-banner';
+  el.style.display = 'block';
+  clearTimeout(showToast._timer);
+  showToast._timer = setTimeout(() => {
+    el.style.display = 'none';
+  }, 4200);
 }
 
-function clearTimers() {
-  if (aiTimerId) {
-    window.clearTimeout(aiTimerId);
-    aiTimerId = null;
-  }
-  if (autoRoundTimerId) {
-    window.clearTimeout(autoRoundTimerId);
-    autoRoundTimerId = null;
+function switchView(viewName) {
+  appState.currentView = viewName;
+  $('viewLobby').style.display = viewName === 'LOBBY' ? 'block' : 'none';
+  $('viewWaitingRoom').style.display = viewName === 'WAITING' ? 'block' : 'none';
+  $('viewGame').style.display = viewName === 'GAME' ? 'grid' : 'none';
+
+  if (viewName === 'GAME') {
+    $('roomBadge').style.display = 'inline-block';
+    $('roundBadge').style.display = 'inline-block';
+  } else {
+    $('roomBadge').style.display = 'none';
+    $('roundBadge').style.display = 'none';
   }
 }
 
-async function loadInitialState() {
-  try {
-    const res = await apiRequest('/api/match/state');
-    await applyStateUpdate(res.state, true);
-  } catch (err) {
-    phaseHeadline.textContent = `Lỗi kết nối: ${err.message}`;
-  }
-}
+// =========================================================================
+// WEBSOCKET CONNECTION
+// =========================================================================
+function connectWebSocket() {
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${proto}//${window.location.host}`;
+  const ws = new WebSocket(wsUrl);
+  appState.ws = ws;
 
-async function applyStateUpdate(newState, isInitialLoad = false) {
-  clearTimers();
-  currentState = newState;
-  renderer.setState(currentState);
+  ws.addEventListener('open', () => {
+    $('connStatusPill').textContent = 'ONLINE';
+    $('connStatusPill').className = 'pixel-pill green';
 
-  const humanPlayer = currentState.players.find((p) => p.id === 'p0');
-  const validHandIds = new Set((humanPlayer?.hand || []).map((c) => c.id));
-  for (const id of Array.from(selectedCardIds)) {
-    if (!validHandIds.has(id)) {
-      selectedCardIds.delete(id);
+    const savedToken = localStorage.getItem(TOKEN_STORAGE_KEY);
+    if (savedToken) {
+      sendWS({ type: 'IDENTIFY', token: savedToken });
+    } else {
+      openProfileSetupModal();
     }
+  });
+
+  ws.addEventListener('close', (ev) => {
+    if (ev.code === 4001 || (ev.code === 1000 && /Replaced/i.test(ev.reason || ''))) {
+      $('connStatusPill').textContent = 'PHIÊN KHÁC ĐANG MỞ';
+      $('connStatusPill').className = 'pixel-pill red';
+      showToast('Phiên kết nối đã được mở ở tab khác. Vui lòng dùng tab mới nhất.');
+      return;
+    }
+    $('connStatusPill').textContent = 'MẤT KẾT NỐI...';
+    $('connStatusPill').className = 'pixel-pill red';
+    setTimeout(connectWebSocket, 2000);
+  });
+
+  ws.addEventListener('message', (ev) => {
+    try {
+      const msg = JSON.parse(ev.data);
+      handleServerMessage(msg);
+    } catch {
+      // ignore
+    }
+  });
+}
+
+function sendWS(payload) {
+  if (!appState.ws || appState.ws.readyState !== WebSocket.OPEN) {
+    showToast('Đang kết nối lại máy chủ, vui lòng chờ...');
+    return false;
   }
+  appState.ws.send(JSON.stringify(payload));
+  return true;
+}
 
-  renderHUD();
-
-  // Check if a new game event occurred that requires a step-by-step 2D Pixel Cutscene
-  const ev = currentState.lastEvent;
-  if (ev && ev.seq !== lastProcessedEventSeq) {
-    lastProcessedEventSeq = ev.seq;
-
-    if (ev.type === 'DEAL_ROUND') {
-      await renderer.playCutscene('DEAL_ROUND', ev, isInitialLoad ? 2800 : 3800);
-    } else if (ev.type === 'PLAY_CARDS') {
-      sound.cardPlay(ev.cardCount || 1);
-      await renderer.playCutscene('PLAY_CARDS', ev, 2100);
-    } else if (ev.type === 'CALL_LIAR_REVEAL') {
-      sound.callLiarSiren();
-      await renderer.playCutscene('CALL_LIAR_REVEAL', ev, 3800);
-      // Reset the roulette stage spin timer so the 1-turn cylinder spin plays right as the stage appears!
-      renderer.rouletteStageEnteredAt = performance.now();
-      sound.cylinderSpin();
-    } else if (ev.type === 'ROULETTE_SHOT') {
-      await renderer.playCutscene('ROULETTE_SHOT', ev, 3000);
-      if (currentState.phase === 'GAME_OVER') {
-        sound.victoryFanfare();
+// =========================================================================
+// SERVER MESSAGE HANDLER
+// =========================================================================
+function handleServerMessage(msg) {
+  switch (msg.type) {
+    case 'ERROR': {
+      showToast(msg.error || 'Có lỗi xảy ra.');
+      if ($('viewLobby').style.display !== 'none') {
+        $('findRoomError').textContent = msg.error || '';
+        $('findRoomError').style.display = msg.error ? 'block' : 'none';
       }
+      break;
     }
-  }
 
-  renderHUD();
-  scheduleNextPacedAction();
+    case 'SYSTEM_NOTICE': {
+      showToast(msg.message, true);
+      break;
+    }
+
+    case 'REQUIRE_PROFILE': {
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
+      openProfileSetupModal();
+      break;
+    }
+
+    case 'IDENTIFIED': {
+      appState.player = msg.player;
+      localStorage.setItem(TOKEN_STORAGE_KEY, msg.player.token);
+      $('profileSetupModal').style.display = 'none';
+      updateHeaderProfile();
+      appState.rooms = msg.rooms || [];
+      appState.waitingRoom = null;
+      appState.gameState = null;
+      renderLobbyRooms();
+      switchView('LOBBY');
+      break;
+    }
+
+    case 'PROFILE_UPDATED': {
+      appState.player = msg.player;
+      updateHeaderProfile();
+      showToast('Đã cập nhật hồ sơ thành công!', true);
+      break;
+    }
+
+    case 'MATCH_HISTORY': {
+      renderProfileHistory(msg.player, msg.history || []);
+      break;
+    }
+
+    case 'LOBBY_UPDATE': {
+      appState.rooms = msg.rooms || [];
+      renderLobbyRooms();
+      break;
+    }
+
+    case 'ROOM_JOINED':
+    case 'ROOM_UPDATED': {
+      appState.waitingRoom = msg.room;
+      $('findRoomError').style.display = 'none';
+      $('createRoomModal').style.display = 'none';
+      switchView('WAITING');
+      renderWaitingRoom();
+      break;
+    }
+
+    case 'ROOM_LEFT': {
+      appState.waitingRoom = null;
+      appState.gameState = null;
+      appState.rooms = msg.rooms || [];
+      switchView('LOBBY');
+      renderLobbyRooms();
+      break;
+    }
+
+    case 'KICKED': {
+      appState.waitingRoom = null;
+      appState.gameState = null;
+      appState.rooms = msg.rooms || [];
+      switchView('LOBBY');
+      renderLobbyRooms();
+      showToast(msg.message || 'Bạn đã bị mời khỏi phòng.');
+      break;
+    }
+
+    case 'MATCH_STARTED': {
+      appState.lastEventSeq = 0;
+      appState.animQueue = [];
+      appState.selectedCardIds = [];
+      switchView('GAME');
+      applyGameState(msg.state);
+      break;
+    }
+
+    case 'GAME_STATE': {
+      if (appState.currentView !== 'GAME') {
+        switchView('GAME');
+        if (appState.lastEventSeq === 0 && msg.state?.eventSeq) {
+          appState.lastEventSeq = msg.state.eventSeq;
+        }
+      }
+      applyGameState(msg.state);
+      break;
+    }
+
+    default:
+      break;
+  }
 }
 
-function renderHUD() {
-  if (!currentState) return;
+// =========================================================================
+// PROFILE SETUP & HISTORY (C1)
+// =========================================================================
+function updateHeaderProfile() {
+  if (!appState.player) return;
+  $('headerPlayerName').textContent = appState.player.name;
+  drawPixelAvatar($('headerAvatarCanvas'), appState.player.avatarKey);
+}
 
-  const isCutsceneBusy = renderer.isCutscenePlaying();
-  const human = currentState.players.find((p) => p.id === 'p0');
-  const activePlayer = currentState.players[currentState.currentTurnIndex];
-  const isHumanTurn =
-    !isCutsceneBusy &&
-    activePlayer?.id === 'p0' &&
-    (currentState.phase === 'TURN_PLAY_OR_CHALLENGE' ||
-      currentState.phase === 'FINAL_CHALLENGE_WINDOW');
+function renderAvatarGrid(containerId, selectedKey, onSelect) {
+  const container = $(containerId);
+  container.innerHTML = '';
+  for (const av of AVATAR_LIST) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `avatar-option ${av.key === selectedKey ? 'selected' : ''}`;
+    const c = document.createElement('canvas');
+    c.width = 40;
+    c.height = 40;
+    drawPixelAvatar(c, av.key);
+    const lbl = document.createElement('span');
+    lbl.textContent = av.label;
+    btn.appendChild(c);
+    btn.appendChild(lbl);
+    btn.addEventListener('click', () => {
+      onSelect(av.key);
+      renderAvatarGrid(containerId, av.key, onSelect);
+    });
+    container.appendChild(btn);
+  }
+}
 
-  // 1. Header Badges
-  roomBadge.textContent = `#${currentState.roomId} • ${currentState.roomName}`;
-  roundBadge.textContent = `VÁN ${currentState.roundNumber} • KEY: BÀN ${currentState.tableRank}`;
-  const aliveCount = currentState.players.filter((p) => p.alive).length;
-  modeBadge.textContent = `CÒN ${aliveCount}/${currentState.players.length} SỐNG • ĐẤU ĐẾN NGƯỜI CUỐI CÙNG`;
+function openProfileSetupModal() {
+  appState.selectedSetupAvatar = 'human';
+  renderAvatarGrid('setupAvatarGrid', appState.selectedSetupAvatar, (key) => {
+    appState.selectedSetupAvatar = key;
+  });
+  $('profileSetupModal').style.display = 'flex';
+}
 
-  pileStatusBadge.textContent = `Tụ bài: ${currentState.pileCount} lá úp`;
+function openProfileHistoryModal() {
+  if (!appState.player) return;
+  $('editNameInput').value = appState.player.name;
+  appState.selectedEditAvatar = appState.player.avatarKey;
+  renderAvatarGrid('editAvatarGrid', appState.selectedEditAvatar, (key) => {
+    appState.selectedEditAvatar = key;
+  });
+  $('profileHistoryModal').style.display = 'flex';
+  sendWS({ type: 'GET_HISTORY' });
+}
 
-  // 2. Phase Banner
-  phaseBanner.classList.toggle(
-    'urgent',
-    currentState.phase === 'FINAL_CHALLENGE_WINDOW' || currentState.phase === 'ROULETTE_PENALTY'
+function renderProfileHistory(player, history) {
+  if (!player) return;
+  appState.player = { ...appState.player, ...player };
+  updateHeaderProfile();
+
+  const total = player.matchesPlayed || 0;
+  const wins = player.wins || 0;
+  const losses = player.losses || 0;
+  const rate = total > 0 ? Math.round((wins / total) * 100) : 0;
+
+  $('statTotalMatches').textContent = total;
+  $('statWins').textContent = wins;
+  $('statLosses').textContent = losses;
+  $('statWinRate').textContent = `${rate}%`;
+
+  const list = $('matchHistoryList');
+  if (history.length === 0) {
+    list.innerHTML = '<div class="empty-state">Chưa có lịch sử trận đấu nào.</div>';
+    return;
+  }
+
+  list.innerHTML = history
+    .map((h) => {
+      const gameLabel = h.gameType === 'POKER_LIAR_BAR' ? 'Poker Liar Bar' : "Liar's Deck";
+      const badgeCls = h.result === 'WIN' ? 'green' : 'red';
+      const resultVi = h.result === 'WIN' ? 'THẮNG' : 'THUA';
+      const timeStr = new Date(h.createdAt).toLocaleString('vi-VN');
+      return `
+        <div class="history-item">
+          <div>
+            <strong>${escapeHtml(h.roomName)}</strong>
+            <span style="color:#b89f83;font-size:11px;"> • ${gameLabel} • ${timeStr}</span>
+          </div>
+          <span class="pixel-pill ${badgeCls}">${resultVi}</span>
+        </div>
+      `;
+    })
+    .join('');
+}
+
+// =========================================================================
+// LOBBY & WAITING ROOM (C2, C3, C4)
+// =========================================================================
+function renderLobbyRooms() {
+  const listEl = $('publicRoomsList');
+  const loadingEl = $('lobbyLoadingState');
+  if (loadingEl) loadingEl.style.display = 'none';
+  const rooms = appState.rooms || [];
+  $('publicRoomsCount').textContent = `${rooms.length} phòng`;
+
+  if (rooms.length === 0) {
+    listEl.innerHTML =
+      '<div class="empty-state">Hiện chưa có phòng công khai nào. Hãy bấm <strong>+ TẠO PHÒNG MỚI</strong> để mở bàn!</div>';
+    return;
+  }
+
+  listEl.innerHTML = '';
+  for (const r of rooms) {
+    const card = document.createElement('div');
+    card.className = 'room-card';
+    const gameLabel = r.gameType === 'POKER_LIAR_BAR' ? 'Poker Liar Bar' : "Liar's Deck";
+    const statusLabel = r.status === 'PLAYING' ? 'ĐANG CHƠI' : 'ĐANG CHỜ';
+    const statusCls = r.status === 'PLAYING' ? 'red' : 'green';
+    card.innerHTML = `
+      <div class="room-card-top">
+        <span class="room-card-name">${escapeHtml(r.roomName)}</span>
+        <span class="pixel-pill ${statusCls}">${statusLabel}</span>
+      </div>
+      <div class="room-card-meta">
+        <span>Chủ phòng: <strong>${escapeHtml(r.hostName)}</strong></span>
+        <span>${r.playerCount}/${r.maxPlayers} người</span>
+      </div>
+      <div class="room-card-meta">
+        <span class="pixel-pill gold">${gameLabel}</span>
+        <span style="color:#f4b41b;font-weight:700;">Bấm để vào &rarr;</span>
+      </div>
+    `;
+    card.addEventListener('click', () => {
+      sendWS({ type: 'JOIN_ROOM', roomId: r.roomId });
+    });
+    listEl.appendChild(card);
+  }
+}
+
+function renderWaitingRoom() {
+  const room = appState.waitingRoom;
+  if (!room) return;
+
+  $('waitRoomTitle').textContent = room.roomName;
+  $('waitGameBadge').textContent =
+    room.gameType === 'POKER_LIAR_BAR' ? 'POKER LIAR BAR' : "LIAR'S DECK";
+  $('waitPrivacyBadge').textContent = room.isPrivate ? 'PHÒNG PRIVATE' : 'CÔNG KHAI';
+  $('waitBotBadge').style.display = room.playWithBots ? 'inline-block' : 'none';
+
+  if (room.isPrivate && room.inviteCode) {
+    $('waitInviteBox').style.display = 'flex';
+    $('waitInviteCodeText').textContent = room.inviteCode;
+  } else {
+    $('waitInviteBox').style.display = 'none';
+  }
+
+  $('waitMemberCount').textContent = `${room.members.length}/${room.maxPlayers}`;
+
+  const isMeHost = appState.player && room.hostId === appState.player.id;
+  const grid = $('waitMembersGrid');
+  grid.innerHTML = '';
+
+  for (const m of room.members) {
+    const card = document.createElement('div');
+    card.className = `member-card ${m.isHost ? 'is-host' : ''}`;
+
+    const left = document.createElement('div');
+    left.className = 'member-left';
+    const av = document.createElement('canvas');
+    av.width = 40;
+    av.height = 40;
+    drawPixelAvatar(av, m.avatarKey);
+
+    const info = document.createElement('div');
+    const roleTag = m.isHost ? '[CHỦ PHÒNG]' : m.isAI ? '[BOT AI]' : 'Người chơi';
+    info.innerHTML = `
+      <div class="member-name">${escapeHtml(m.name)}</div>
+      <div class="member-role">${roleTag}</div>
+    `;
+
+    left.appendChild(av);
+    left.appendChild(info);
+    card.appendChild(left);
+
+    if (isMeHost && m.id !== appState.player.id) {
+      const kickBtn = document.createElement('button');
+      kickBtn.type = 'button';
+      kickBtn.className = 'pixel-btn danger sm';
+      kickBtn.textContent = 'KICK';
+      kickBtn.addEventListener('click', () => {
+        sendWS({ type: 'KICK_PLAYER', targetPlayerId: m.id });
+      });
+      card.appendChild(kickBtn);
+    }
+
+    grid.appendChild(card);
+  }
+
+  const startBtn = $('btnStartMatch');
+  if (isMeHost) {
+    startBtn.style.display = 'inline-block';
+    const canStart = room.members.length >= 2;
+    startBtn.disabled = !canStart;
+    $('waitStartHint').textContent = canStart
+      ? 'Đã đủ người! Bấm Bắt đầu để vào ván.'
+      : 'Cần tối thiểu 2 người chơi (người thật hoặc bot) để bắt đầu.';
+  } else {
+    startBtn.style.display = 'none';
+    $('waitStartHint').textContent = 'Đang chờ chủ phòng bấm Bắt đầu...';
+  }
+}
+
+// =========================================================================
+// IN-GAME STATE, ANIMATION QUEUE (E) & HUD (C5)
+// =========================================================================
+function applyGameState(state) {
+  if (!state) return;
+  const prevState = appState.gameState;
+  appState.gameState = state;
+  appState.clockOffsetMs =
+    typeof state.serverNow === 'number' ? state.serverNow - Date.now() : 0;
+
+  if (renderer) {
+    renderer.setState(state);
+  }
+
+  // Enqueue animations sequentially from lastEvent
+  if (state.lastEvent && state.lastEvent.seq > appState.lastEventSeq) {
+    appState.lastEventSeq = state.lastEvent.seq;
+    enqueueAnimationForEvent(state.lastEvent, state, prevState);
+  }
+
+  renderGameHUD(state);
+}
+
+function enqueueAnimationForEvent(ev, state) {
+  if (!renderer) return;
+
+  if (ev.type === 'DEAL_ROUND') {
+    appState.animQueue.push(() =>
+      renderer.playCutscene('DEAL_ROUND', ev, 4800)
+    );
+  } else if (ev.type === 'PLAY_CARDS') {
+    appState.animQueue.push(() =>
+      renderer.playCutscene('PLAY_CARDS', ev, 1800)
+    );
+  } else if (ev.type === 'CALL_LIAR_REVEAL') {
+    appState.animQueue.push(() =>
+      renderer.playCutscene('CALL_LIAR_REVEAL', ev, 4000)
+    );
+  } else if (ev.type === 'ROULETTE_SHOT') {
+    const dur = ev.outcomeType === 'DODGE' ? 3800 : 3200;
+    appState.animQueue.push(() =>
+      renderer.playCutscene('ROULETTE_SHOT', ev, dur)
+    );
+  } else if (ev.type === 'STREET_REVEAL') {
+    appState.animQueue.push(() =>
+      renderer.playCutscene('STREET_REVEAL', ev, 1600)
+    );
+  } else if (ev.type === 'POKER_SHOWDOWN' || ev.type === 'POKER_BLUFF_REVEAL') {
+    appState.animQueue.push(() =>
+      renderer.playCutscene(ev.type, ev, 3600)
+    );
+  }
+
+  processAnimQueue();
+}
+
+async function processAnimQueue() {
+  if (appState.isAnimating) return;
+  appState.isAnimating = true;
+  while (appState.animQueue.length > 0) {
+    const fn = appState.animQueue.shift();
+    try {
+      await fn();
+    } catch {
+      // ignore
+    }
+  }
+  appState.isAnimating = false;
+  if (appState.gameState) {
+    renderGameHUD(appState.gameState);
+  }
+}
+
+function renderGameHUD(state) {
+  const myId = appState.player?.id;
+  const me = state.players.find((p) => p.id === myId);
+
+  $('roomBadge').textContent = state.roomName;
+  $('roundBadge').textContent =
+    state.gameType === 'POKER_LIAR_BAR'
+      ? `VÁN ${state.roundNumber} • POKER (${state.street})`
+      : `VÁN ${state.roundNumber} • BÀN ${state.tableRank}`;
+
+  // Alive Roster + Glowing active turn ring (C5)
+  const aliveCount = state.players.filter((p) => p.alive).length;
+  $('aliveCountLabel').textContent = `${aliveCount}/${state.players.length}`;
+
+  const rosterEl = $('playersRosterList');
+  rosterEl.innerHTML = state.players
+    .map((p) => {
+      const isActive = p.id === state.currentTurnPlayerId && p.alive;
+      const cls = `hud-player-row ${isActive ? 'active-turn' : ''} ${!p.alive ? 'dead' : ''}`;
+      return `
+        <div class="${cls}">
+          <span>${p.isHost ? '[CHỦ] ' : ''}${escapeHtml(p.name)}</span>
+          <span>${p.alive ? `${p.revolver?.shotsTaken || 0}/6` : '[LOẠI]'}</span>
+        </div>
+      `;
+    })
+    .join('');
+
+  // Key Card Visual Image below Scoreboard (C5)
+  const keyCanvas = $('keyCardCanvas');
+  if (state.gameType === 'POKER_LIAR_BAR') {
+    $('keyCardHudTitle').textContent = 'CƯỢC ĐẠN';
+    keyCanvas.style.display = 'none';
+    $('pokerStakeInfo').style.display = 'flex';
+    $('pokerStakeVal').textContent = state.currentStake;
+    $('pokerStreetVal').textContent = state.street;
+  } else {
+    $('keyCardHudTitle').textContent = 'LÁ BÀI KEY';
+    keyCanvas.style.display = 'block';
+    $('pokerStakeInfo').style.display = 'none';
+    drawPixelCard(keyCanvas, { rank: state.tableRank }, { isKeyCard: true });
+  }
+
+  // Phase Banner
+  if (state.phase === 'GAME_OVER') {
+    $('phaseHeadline').textContent = `CHIẾN THẮNG CHUNG CUỘC: ${state.winnerName}!`;
+    $('phaseSubline').textContent = 'Ván lớn đã kết thúc. Bấm Rời phòng để về Sảnh.';
+  } else if (state.phase === 'ROUND_END') {
+    $('phaseHeadline').textContent = 'KẾT THÚC VÁN CON — CHUẨN BỊ VÁN TIẾP THEO...';
+    $('phaseSubline').textContent = 'Đang chia bài cho những người sống sót...';
+  } else if (state.phase === 'ROULETTE_PENALTY') {
+    const targetId =
+      state.gameType === 'POKER_LIAR_BAR'
+        ? state.pendingPenalty?.targetPlayerId
+        : state.pendingPenalty?.targetPlayerIds?.[0];
+    const targetP = state.players.find((p) => p.id === targetId);
+    $('phaseHeadline').textContent = `PHẠT SÚNG LỤC: ${targetP?.name || ''}`;
+    $('phaseSubline').textContent =
+      targetId === myId ? 'Tới lượt bạn bóp cò Cò Quay Nga!' : 'Đang chờ đối thủ bóp cò...';
+  } else {
+    const turnP = state.players.find((p) => p.id === state.currentTurnPlayerId);
+    $('phaseHeadline').textContent =
+      turnP?.id === myId ? 'ĐẾN LƯỢT CỦA BẠN!' : `Lượt của: ${turnP?.name || '...'}`;
+    $('phaseSubline').textContent =
+      state.gameType === 'POKER_LIAR_BAR'
+        ? `Cược hiện tại: ${state.currentStake} viên đạn • Vòng ${state.street}`
+        : `Tuyên bố theo bài Key (${state.tableRank}) hoặc Bắt Liar!`;
+  }
+
+  $('pileStatusBadge').textContent =
+    state.gameType === 'POKER_LIAR_BAR'
+      ? `Cược: ${state.currentStake} đạn`
+      : `Tụ bài: ${state.pileCount || 0} lá`;
+
+  // Render 2D Pixel Hand Cards
+  const handContainer = $('handCardsContainer');
+  handContainer.innerHTML = '';
+  const myHand = me?.hand || [];
+  $('handHeaderTitle').textContent = `[BÀI TRÊN TAY: ${myHand.length} LÁ]`;
+
+  // Prune invalid selections
+  appState.selectedCardIds = appState.selectedCardIds.filter((id) =>
+    myHand.some((c) => c.id === id)
   );
 
-  if (currentState.phase === 'GAME_OVER') {
-    phaseHeadline.textContent = `[KẾT THÚC TRẬN ĐẤU] ${currentState.winnerName} LÀ NGƯỜI SỐNG SÓT CUỐI CÙNG!`;
-    phaseSubline.textContent = `Tất cả đối thủ khác đã bị loại. Bấm "CHƠI TRẬN MỚI" để bắt đầu lại từ đầu!`;
-  } else if (currentState.phase === 'ROULETTE_PENALTY') {
-    const nextShooterId = currentState.pendingPenalty?.targetPlayerIds?.[0];
-    const shooter = currentState.players.find((p) => p.id === nextShooterId);
-    const vTag = currentState.pendingPenalty?.verdictTag || 'FAKE';
-    phaseHeadline.textContent = `[PHÁN QUYẾT: ${vTag}] ${shooter?.name || ''} PHẢI BẮN SÚNG LỤC!`;
-    phaseSubline.textContent =
-      'Ổ đạn đã quay 1 vòng! Hãy bấm nút "BẮN SÚNG!" bên dưới để xem kết quả (Trúng đạn vỡ Avatar / Đạn rỗng Tích / 1% Né đạn)!';
-  } else if (currentState.phase === 'FINAL_CHALLENGE_WINDOW') {
-    const emptyPlayerName = currentState.lastPlay?.playerName || 'Đối thủ';
-    phaseHeadline.textContent = `[XÉT BÀI CUỐI] ${emptyPlayerName} vừa đánh hết bài trên tay!`;
-    phaseSubline.textContent = isHumanTurn
-      ? 'Lượt bạn quyết định: Hô "LẬT BÀI!" để xét bài, hoặc "CHO QUA" (công nhận họ thắng ván con này)!'
-      : `Đang chờ ${activePlayer?.name} quyết định Lật Bài hay Cho Qua...`;
-  } else if (currentState.phase === 'ROUND_END') {
-    const res = currentState.lastRouletteResult;
-    const aliveList = currentState.players
-      .filter((p) => p.alive)
-      .map((p) => p.name)
-      .join(', ');
-    phaseHeadline.textContent = res?.isFatal
-      ? `[1 NGƯỜI ĐÃ CHẾT: ${res.playerName}] — CÒN ${aliveCount} NGƯỜI SỐNG TIẾP TỤC CHIA VÁN MỚI!`
-      : res?.isMiracleDodge
-      ? `[1% BẮN HỤT NGOẠN MỤC!] ${res.playerName}: "Hú hồn, né được nhé!" — Tiếp tục chia ván mới!`
-      : `[TÍCH! ĐẠN RỖNG] ${res?.playerName || ''} sống sót — Tiếp tục chia ván mới!`;
-    phaseSubline.textContent = `Người đã chết không được tham gia tiếp. Còn sống (${aliveCount}): ${aliveList}. Bấm "TIẾP TỤC VÁN MỚI" (hoặc tự động sau 5 giây)!`;
-  } else {
-    phaseHeadline.textContent = isHumanTurn
-      ? `>> LƯỢT CỦA BẠN! (KEY VÁN ${currentState.roundNumber}: BÀN LÁ ${currentState.tableRank})`
-      : `>> Đang là lượt của: ${activePlayer?.name || '...'}`;
-    phaseSubline.textContent = currentState.lastPlay
-      ? `${currentState.lastPlay.playerName} vừa đánh ${currentState.lastPlay.claimedCount} lá (Tuyên bố ${currentState.lastPlay.claimedCount} Lá ${currentState.lastPlay.claimedRank}). Bạn có thể Đánh Tiếp hoặc Hô LẬT BÀI!`
-      : `Mở màn ván ${currentState.roundNumber}: Chọn 1 đến 3 lá bài trên tay và bấm ĐÁNH BÀI ÚP.`;
+  for (const card of myHand) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    const isSelected = appState.selectedCardIds.includes(card.id);
+    btn.className = `pixel-card-btn ${isSelected ? 'selected' : ''}`;
+    const c = document.createElement('canvas');
+    c.width = 84;
+    c.height = 116;
+    drawPixelCard(c, card);
+    btn.appendChild(c);
+
+    btn.addEventListener('click', () => {
+      if (state.gameType === 'POKER_LIAR_BAR') {
+        appState.selectedCardIds = [card.id];
+      } else {
+        if (appState.selectedCardIds.includes(card.id)) {
+          appState.selectedCardIds = appState.selectedCardIds.filter((x) => x !== card.id);
+        } else if (appState.selectedCardIds.length < 3) {
+          appState.selectedCardIds.push(card.id);
+        }
+      }
+      sound.cardSelect();
+      renderGameHUD(appState.gameState);
+    });
+
+    handContainer.appendChild(btn);
   }
 
-  // 3. Render Player Hand Cards
-  renderPlayerHand(human);
+  $('selectionPreviewBadge').textContent =
+    appState.selectedCardIds.length > 0
+      ? `Đã chọn ${appState.selectedCardIds.length} lá`
+      : 'Chưa chọn lá nào';
 
-  // 4. Render Action Buttons visibility & disabled state
-  const penaltyTargets = currentState.pendingPenalty?.targetPlayerIds || [];
+  // Action Controls
+  const isMyTurn = state.currentTurnPlayerId === myId && me?.alive;
+  if (state.gameType === 'POKER_LIAR_BAR') {
+    $('liarsDeckControls').style.display = 'none';
+    $('pokerControls').style.display = 'flex';
+    const isPenaltyMe =
+      state.phase === 'ROULETTE_PENALTY' && state.pendingPenalty?.targetPlayerId === myId;
+    const canAct = state.phase === 'TURN_PLAY_OR_CHALLENGE' && isMyTurn;
 
-  btnPlayCards.style.display =
-    currentState.phase === 'TURN_PLAY_OR_CHALLENGE' ? 'inline-block' : 'none';
-  btnPlayCards.disabled =
-    isCutsceneBusy || !isHumanTurn || selectedCardIds.size < 1 || selectedCardIds.size > 3;
+    const minRank = state.lastClaim ? state.lastClaim.handRank : 1;
+    const sel = $('selectPokerClaim');
+    Array.from(sel.options).forEach((opt) => {
+      opt.disabled = Number(opt.value) < minRank;
+    });
+    if (Number(sel.value) < minRank) {
+      sel.value = String(minRank);
+    }
 
-  btnCallLiar.style.display =
-    currentState.phase === 'TURN_PLAY_OR_CHALLENGE' ||
-    currentState.phase === 'FINAL_CHALLENGE_WINDOW'
-      ? 'inline-block'
-      : 'none';
-  btnCallLiar.disabled =
-    isCutsceneBusy ||
-    !isHumanTurn ||
-    !currentState.lastPlay ||
-    currentState.lastPlay.playerId === 'p0';
+    $('btnPokerCheckCall').style.display = canAct ? 'inline-block' : 'none';
+    $('btnPokerRaise').style.display = canAct && state.currentStake < 6 ? 'inline-block' : 'none';
+    $('selectPokerClaim').style.display = canAct && state.currentStake < 6 ? 'inline-block' : 'none';
+    $('btnPokerAllIn').style.display =
+      canAct && state.currentStake < 6 && !me?.usedSwitchThisTurn ? 'inline-block' : 'none';
+    $('btnPokerSwitch').style.display =
+      canAct && (me?.switchesLeft || 0) > 0 ? 'inline-block' : 'none';
+    $('btnPokerCallBluff').style.display =
+      canAct && state.lastClaim && state.lastClaim.playerId !== myId ? 'inline-block' : 'none';
+    $('btnPokerFold').style.display = canAct ? 'inline-block' : 'none';
+    $('btnPokerPullTrigger').style.display = isPenaltyMe && !appState.isAnimating ? 'inline-block' : 'none';
+  } else {
+    $('liarsDeckControls').style.display = 'flex';
+    $('pokerControls').style.display = 'none';
 
-  btnPassFinal.style.display =
-    currentState.phase === 'FINAL_CHALLENGE_WINDOW' ? 'inline-block' : 'none';
-  btnPassFinal.disabled = isCutsceneBusy || !isHumanTurn;
+    const isPenaltyMe =
+      state.phase === 'ROULETTE_PENALTY' &&
+      state.pendingPenalty?.targetPlayerIds?.[0] === myId;
+    const isFinal = state.phase === 'FINAL_CHALLENGE_WINDOW';
+    const isTurnPhase = state.phase === 'TURN_PLAY_OR_CHALLENGE';
 
-  btnPullTrigger.style.display =
-    currentState.phase === 'ROULETTE_PENALTY' ? 'inline-block' : 'none';
-  btnPullTrigger.disabled = isCutsceneBusy || penaltyTargets.length === 0;
-  const shooterObj = currentState.players.find((p) => p.id === penaltyTargets[0]);
-  btnPullTrigger.textContent =
-    penaltyTargets[0] === 'p0'
-      ? 'BẮN SÚNG! (TỰ BÓP CÒ) [SPACE / R]'
-      : `BẮN SÚNG! (${shooterObj?.name || 'ĐỐI THỦ'} BÓP CÒ) [SPACE / R]`;
+    $('btnPlayCards').style.display = isTurnPhase ? 'inline-block' : 'none';
+    $('btnPlayCards').disabled = !isMyTurn || appState.selectedCardIds.length === 0;
+    $('btnCallLiar').style.display = isTurnPhase || isFinal ? 'inline-block' : 'none';
+    $('btnCallLiar').disabled =
+      !isMyTurn || !state.lastPlay || state.lastPlay.playerId === myId;
+    $('btnPassFinal').style.display =
+      isFinal && isMyTurn && state.winMode === 'EMPTY_HAND_WIN' ? 'inline-block' : 'none';
+    $('btnPullTrigger').style.display = isPenaltyMe && !appState.isAnimating ? 'inline-block' : 'none';
+    $('btnClearSelection').style.display = isTurnPhase ? 'inline-block' : 'none';
+  }
 
-  btnNextRound.style.display =
-    currentState.phase === 'ROUND_END' || currentState.phase === 'GAME_OVER'
-      ? 'inline-block'
-      : 'none';
-  btnNextRound.disabled = isCutsceneBusy;
-  btnNextRound.textContent =
-    currentState.phase === 'GAME_OVER'
-      ? 'CHƠI TRẬN MỚI [ENTER]'
-      : 'TIẾP TỤC CHIA VÁN MỚI [ENTER / SPACE]';
-
-  btnClearSelection.style.display =
-    currentState.phase === 'TURN_PLAY_OR_CHALLENGE' ? 'inline-block' : 'none';
-  btnClearSelection.disabled = isCutsceneBusy || selectedCardIds.size === 0;
-
-  // 5. Render Top-Right Revolver HUD & Match Log
-  renderSidebarRoster();
-  renderActionLog();
+  // Action Log
+  const logEl = $('actionLogList');
+  logEl.innerHTML = (state.actionLog || [])
+    .slice()
+    .reverse()
+    .map((entry) => `<div class="log-item">${escapeHtml(entry.messageVi)}</div>`)
+    .join('');
 }
 
-function renderPlayerHand(human) {
-  const hand = human?.hand || [];
-  handHeaderTitle.textContent = !human?.alive
-    ? '[ĐÃ CHẾT — BẠN ĐANG XEM CÁC NGƯỜI CHƠI CÒN SỐNG ĐẤU TIẾP]'
-    : human?.safeForRound
-    ? '[THẮNG VÁN CON — BẠN ĐÃ HẾT BÀI VÀ AN TOÀN TRONG VÁN NÀY]'
-    : `[BÀI TRÊN TAY: ${hand.length} LÁ] — KEY VÁN: LÁ ${currentState.tableRank}`;
-
-  const selectedList = hand.filter((c) => selectedCardIds.has(c.id));
-  if (selectedList.length === 0) {
-    selectionPreviewBadge.className = 'selection-indicator';
-    selectionPreviewBadge.textContent = 'Chưa chọn lá nào (Chọn 1-3 lá)';
-  } else {
-    const hasDevil = selectedList.some((c) => c.rank === 'D');
-    const allTruth = selectedList.every(
-      (c) => c.rank === currentState.tableRank || c.rank === 'J'
-    );
-    if (hasDevil && selectedList.length > 1) {
-      selectionPreviewBadge.className = 'selection-indicator bluff';
-      selectionPreviewBadge.textContent = '[LỖI] Lá Ác Quỷ (D) chỉ được đánh lẻ 1 lá!';
-    } else if (hasDevil) {
-      selectionPreviewBadge.className = 'selection-indicator bluff';
-      selectionPreviewBadge.textContent = `[BẪY ÁC QUỶ] Đang chọn 1 lá D -> Bẫy cả bàn!`;
-    } else if (allTruth) {
-      selectionPreviewBadge.className = 'selection-indicator truth';
-      selectionPreviewBadge.textContent = `[REAL / THẬT] Chọn ${selectedList.length} lá -> Đúng Bàn ${currentState.tableRank}`;
+function startTurnTimerLoop() {
+  if (appState.timerInterval) clearInterval(appState.timerInterval);
+  appState.timerInterval = setInterval(() => {
+    const state = appState.gameState;
+    const timerBox = $('centerTurnTimer');
+    const digitsEl = $('turnTimerValue');
+    if (!state || !state.turnDeadlineAt || state.phase === 'GAME_OVER' || state.phase === 'ROUND_END') {
+      digitsEl.textContent = '--';
+      timerBox.classList.remove('urgent');
+      return;
+    }
+    const syncedNow = Date.now() + (appState.clockOffsetMs || 0);
+    const leftMs = Math.max(0, state.turnDeadlineAt - syncedNow);
+    const leftSec = Math.ceil(leftMs / 1000);
+    digitsEl.textContent = String(leftSec);
+    if (leftSec <= 10) {
+      timerBox.classList.add('urgent');
     } else {
-      selectionPreviewBadge.className = 'selection-indicator bluff';
-      selectionPreviewBadge.textContent = `[FAKE / NÓI DỐI] Chọn ${selectedList.length} lá -> Tuyên bố ${selectedList.length} Lá ${currentState.tableRank}`;
+      timerBox.classList.remove('urgent');
     }
+  }, 250);
+}
+
+function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// =========================================================================
+// INITIALIZATION & EVENT BINDINGS
+// =========================================================================
+function initApp() {
+  const canvas = $('tavernCanvas');
+  if (canvas) {
+    renderer = new PixelTableRenderer(canvas, sound);
+    renderer.startLoop();
   }
 
-  handCardsContainer.innerHTML = '';
-  if (hand.length === 0) {
-    const emptyEl = document.createElement('div');
-    emptyEl.style.color = human?.alive ? 'var(--accent-green)' : 'var(--accent-red)';
-    emptyEl.style.fontWeight = '800';
-    emptyEl.textContent = human?.alive
-      ? '[ĐÃ HẾT BÀI TRÊN TAY — AN TOÀN TRONG VÁN CON NÀY!]'
-      : '[BẠN ĐÃ TRÚNG ĐẠN BỊ LOẠI — KHÔNG ĐƯỢC CHIA BÀI Ở VÁN MỚI]';
-    handCardsContainer.appendChild(emptyEl);
-    return;
+  drawPixelAvatar($('headerAvatarCanvas'), 'human');
+  if (!localStorage.getItem(TOKEN_STORAGE_KEY)) {
+    openProfileSetupModal();
   }
 
-  hand.forEach((card, idx) => {
-    const isSelected = selectedCardIds.has(card.id);
-    const isTruth = card.rank === currentState.tableRank || card.rank === 'J';
-    const isDevil = card.rank === 'D';
+  const loadingEl = $('lobbyLoadingState');
+  if (loadingEl) loadingEl.style.display = 'block';
 
-    const cardBtn = document.createElement('div');
-    cardBtn.className = `pixel-card rank-${card.rank}${isSelected ? ' selected' : ''}`;
-    cardBtn.dataset.cardId = card.id;
+  startTurnTimerLoop();
+  connectWebSocket();
 
-    const tagClass = isDevil ? 'devil' : isTruth ? 'match' : 'lie';
-    const tagText = isDevil
-      ? 'ÁC QUỶ'
-      : card.rank === 'J'
-      ? 'JOKER (REAL)'
-      : isTruth
-      ? `REAL (${currentState.tableRank})`
-      : `FAKE (KHÁC ${currentState.tableRank})`;
-
-    cardBtn.innerHTML = `
-      <div class="card-top-row">
-        <span>${card.rank}</span>
-        <span class="card-key-hint">[${idx + 1}]</span>
-      </div>
-      <div class="card-center-rank">${card.rank}</div>
-      <div class="card-bottom-tag ${tagClass}">${tagText}</div>
-    `;
-
-    cardBtn.addEventListener('click', () => {
-      toggleCardSelection(card.id);
+  // Profile Setup Save
+  $('btnSaveSetupProfile').addEventListener('click', () => {
+    const name = $('setupNameInput').value.trim();
+    if (name.length < 2) {
+      $('setupError').textContent = 'Tên phải có ít nhất 2 ký tự.';
+      $('setupError').style.display = 'block';
+      return;
+    }
+    $('setupError').style.display = 'none';
+    sendWS({
+      type: 'IDENTIFY',
+      name,
+      avatarKey: appState.selectedSetupAvatar
     });
-
-    handCardsContainer.appendChild(cardBtn);
   });
-}
 
-function toggleCardSelection(cardId) {
-  if (
-    !currentState ||
-    renderer.isCutscenePlaying() ||
-    currentState.phase !== 'TURN_PLAY_OR_CHALLENGE'
-  ) {
-    return;
-  }
-  if (selectedCardIds.has(cardId)) {
-    selectedCardIds.delete(cardId);
-    sound.cardSelect();
-  } else {
-    if (selectedCardIds.size >= 3) {
-      const firstId = selectedCardIds.values().next().value;
-      selectedCardIds.delete(firstId);
+  // Top-right Profile & History
+  $('btnProfileCorner').addEventListener('click', openProfileHistoryModal);
+  $('btnCloseProfileModal').addEventListener('click', () => {
+    $('profileHistoryModal').style.display = 'none';
+  });
+  $('btnUpdateProfile').addEventListener('click', () => {
+    const name = $('editNameInput').value.trim();
+    if (name.length < 2) {
+      showToast('Tên phải có ít nhất 2 ký tự.');
+      return;
     }
-    selectedCardIds.add(cardId);
-    sound.cardSelect();
-  }
-  renderHUD();
-}
-
-function renderSidebarRoster() {
-  const aliveCount = currentState.players.filter((p) => p.alive).length;
-  aliveCountLabel.textContent = `${aliveCount}/${currentState.players.length} SỐNG`;
-  playersRosterList.innerHTML = '';
-
-  currentState.players.forEach((p, idx) => {
-    const row = document.createElement('div');
-    const isTurn =
-      currentState.currentTurnIndex === idx &&
-      (currentState.phase === 'TURN_PLAY_OR_CHALLENGE' ||
-        currentState.phase === 'FINAL_CHALLENGE_WINDOW');
-    row.className = `corner-hud-row${isTurn ? ' active-turn' : ''}${!p.alive ? ' dead' : ''}`;
-
-    const shortName = p.name.split('(')[0].trim();
-    const pipsHtml = Array.from(
-      { length: 6 },
-      (_, ch) => `<span class="chamber-pip${ch < p.revolver.shotsTaken ? ' spent' : ''}"></span>`
-    ).join('');
-
-    row.innerHTML = `
-      <span class="corner-hud-name">${isTurn ? '>' : ''}${shortName}</span>
-      <span class="corner-hud-chambers">${pipsHtml}</span>
-      <span class="corner-hud-shots">${!p.alive ? 'CHẾT' : `${p.revolver.shotsTaken}/6`}</span>
-    `;
-    playersRosterList.appendChild(row);
-  });
-}
-
-function renderActionLog() {
-  const logs = currentState.actionLog || [];
-  logCountBadge.textContent = `${logs.length} mục`;
-  actionLogContainer.innerHTML = '';
-
-  [...logs].reverse().forEach((item) => {
-    const div = document.createElement('div');
-    div.className = `log-item ${item.type || ''}`;
-    div.textContent = `[Ván ${item.round}] ${item.messageVi}`;
-    actionLogContainer.appendChild(div);
-  });
-}
-
-async function submitPlayerAction(type, payload = {}) {
-  if (isRequestInFlight || renderer.isCutscenePlaying() || !currentState) return;
-  isRequestInFlight = true;
-  clearTimers();
-  try {
-    const res = await apiRequest('/api/match/action', 'POST', {
-      roomId: currentState.roomId,
-      type,
-      playerId: 'p0',
-      ...payload
+    sendWS({
+      type: 'UPDATE_PROFILE',
+      name,
+      avatarKey: appState.selectedEditAvatar
     });
-    if (type === 'PLAY_CARDS') {
-      selectedCardIds.clear();
-    }
-    isRequestInFlight = false;
-    await applyStateUpdate(res.state);
-  } catch (err) {
-    isRequestInFlight = false;
-    phaseSubline.textContent = `[LỖI] ${err.message}`;
-  }
-}
-
-function scheduleNextPacedAction() {
-  clearTimers();
-  if (!currentState || renderer.isCutscenePlaying()) return;
-
-  // 1. In ROUND_END: Show continuation banner & automatically start the next round after 5.2 seconds
-  //    (or the player can click "TIẾP TỤC CHIA VÁN MỚI" immediately!)
-  if (currentState.phase === 'ROUND_END') {
-    autoRoundTimerId = window.setTimeout(() => {
-      submitPlayerAction('NEXT_ROUND');
-    }, 5200);
-    return;
-  }
-
-  if (currentState.phase === 'GAME_OVER') {
-    return;
-  }
-
-  // 2. In ROULETTE_PENALTY: Let the player see the cylinder spin for 1.1s and click "BẮN SÚNG!".
-  //    If an AI is the shooter (or if human is dead), auto-pull after 3.2s if user hasn't clicked yet.
-  if (currentState.phase === 'ROULETTE_PENALTY') {
-    const nextShooterId = currentState.pendingPenalty?.targetPlayerIds?.[0];
-    const shooter = currentState.players.find((p) => p.id === nextShooterId);
-    if (shooter && shooter.isAI) {
-      aiTimerId = window.setTimeout(() => {
-        submitPlayerAction('PULL_TRIGGER', { targetPlayerId: shooter.id });
-      }, 3200);
-    }
-    return;
-  }
-
-  // 3. Normal AI Turn — paced at 1.6s AFTER any previous cutscene has already completed!
-  const activePlayer = currentState.players[currentState.currentTurnIndex];
-  if (
-    activePlayer &&
-    activePlayer.isAI &&
-    (currentState.phase === 'TURN_PLAY_OR_CHALLENGE' ||
-      currentState.phase === 'FINAL_CHALLENGE_WINDOW')
-  ) {
-    aiTimerId = window.setTimeout(() => {
-      submitPlayerAction('AI_STEP', { aiPlayerId: activePlayer.id });
-    }, 1600);
-  }
-}
-
-// Event Listeners
-btnPlayCards.addEventListener('click', () => {
-  if (selectedCardIds.size < 1 || selectedCardIds.size > 3) return;
-  submitPlayerAction('PLAY_CARDS', { cardIds: Array.from(selectedCardIds) });
-});
-
-btnCallLiar.addEventListener('click', () => {
-  submitPlayerAction('CALL_LIAR');
-});
-
-btnPassFinal.addEventListener('click', () => {
-  submitPlayerAction('PASS_FINAL');
-});
-
-btnPullTrigger.addEventListener('click', () => {
-  const targetId = currentState?.pendingPenalty?.targetPlayerIds?.[0] || 'p0';
-  submitPlayerAction('PULL_TRIGGER', { targetPlayerId: targetId });
-});
-
-btnNextRound.addEventListener('click', async () => {
-  if (!currentState || renderer.isCutscenePlaying()) return;
-  if (currentState.phase === 'GAME_OVER') {
-    await startFreshMatchFromCurrentSettings();
-  } else {
-    await submitPlayerAction('NEXT_ROUND');
-  }
-});
-
-btnClearSelection.addEventListener('click', () => {
-  selectedCardIds.clear();
-  renderHUD();
-});
-
-document.getElementById('btnQuickRestart').addEventListener('click', async () => {
-  await startFreshMatchFromCurrentSettings();
-});
-
-async function startFreshMatchFromCurrentSettings() {
-  clearTimers();
-  selectedCardIds.clear();
-  const res = await apiRequest('/api/match/new', 'POST', {
-    roomId: currentState?.roomId || 'BAN-101',
-    roomName: currentState?.roomName || 'Quán Rượu Cáo Già #101',
-    playerName: currentState?.players?.[0]?.name || 'Bạn (Tay Chơi)',
-    playerAvatar: currentState?.players?.[0]?.avatarKey || 'human',
-    winMode: currentState?.winMode || 'EMPTY_HAND_WIN',
-    includeDevil: Boolean(currentState?.includeDevil),
-    botDifficulty: currentState?.botDifficulty || 'NORMAL'
   });
-  await applyStateUpdate(res.state);
-}
 
-// Lobby & Room Browser
-document.getElementById('btnOpenLobby').addEventListener('click', async () => {
-  lobbyModal.classList.remove('hidden');
-  await refreshRoomsList();
-});
+  // Lobby: Find Private Room
+  $('btnJoinByCode').addEventListener('click', () => {
+    const code = $('inputInviteCode').value.trim().toUpperCase();
+    if (!code) {
+      $('findRoomError').textContent = 'Vui lòng nhập mã mời.';
+      $('findRoomError').style.display = 'block';
+      return;
+    }
+    $('findRoomError').style.display = 'none';
+    sendWS({ type: 'JOIN_ROOM', inviteCode: code });
+  });
 
-document.getElementById('btnCloseLobby').addEventListener('click', () => {
-  lobbyModal.classList.add('hidden');
-});
+  // Create Room Modal
+  $('btnOpenCreateRoom').addEventListener('click', () => {
+    $('createRoomModal').style.display = 'flex';
+  });
+  $('btnCloseCreateRoom').addEventListener('click', () => {
+    $('createRoomModal').style.display = 'none';
+  });
+  $('btnCancelCreateRoom').addEventListener('click', () => {
+    $('createRoomModal').style.display = 'none';
+  });
 
-async function refreshRoomsList() {
-  try {
-    const data = await apiRequest('/api/rooms');
-    publicRoomsList.innerHTML = '';
-    data.rooms.forEach((r) => {
-      const card = document.createElement('div');
-      card.className = 'room-card';
-      card.innerHTML = `
-        <div>
-          <strong style="color: var(--accent-gold);">#${r.roomId} — ${r.roomName}</strong>
-          <div style="font-size: 0.75rem; color: var(--text-muted);">
-            Ván ${r.roundNumber} (${r.aliveCount}/${r.totalPlayers} sống)${r.includeDevil ? ' • Có Lá Ác Quỷ' : ''}
-          </div>
-        </div>
-        <button type="button" class="pixel-btn primary" data-join-room="${r.roomId}">VÀO BÀN</button>
-      `;
-      card.querySelector('[data-join-room]').addEventListener('click', async () => {
-        const stateRes = await apiRequest(`/api/match/state?roomId=${encodeURIComponent(r.roomId)}`);
-        lobbyModal.classList.add('hidden');
-        selectedCardIds.clear();
-        await applyStateUpdate(stateRes.state);
-      });
-      publicRoomsList.appendChild(card);
+  document.querySelectorAll('input[name="createPlayMode"]').forEach((radio) => {
+    radio.addEventListener('change', (e) => {
+      $('botOptionsGroup').style.display = e.target.value === 'BOTS' ? 'block' : 'none';
     });
-  } catch (err) {
-    publicRoomsList.textContent = `Lỗi tải danh sách phòng: ${err.message}`;
-  }
-}
-
-document.getElementById('createRoomForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const playerName = document.getElementById('inputPlayerName').value.trim() || 'Bạn (Tay Chơi)';
-  const roomName = document.getElementById('inputRoomName').value.trim() || 'Bàn Quán Rượu';
-  const winMode = document.getElementById('selectWinMode').value;
-  const includeDevil = document.getElementById('selectDevilMode').value === 'true';
-  const playerAvatar = document.getElementById('selectAvatar').value;
-  const botDifficulty = document.getElementById('selectBotDifficulty').value;
-
-  const res = await apiRequest('/api/match/new', 'POST', {
-    roomName,
-    playerName,
-    playerAvatar,
-    winMode,
-    includeDevil,
-    botDifficulty
   });
-  lobbyModal.classList.add('hidden');
-  selectedCardIds.clear();
-  await applyStateUpdate(res.state);
-});
 
-// Rules Modal
-document.getElementById('btnOpenRules').addEventListener('click', () => {
-  rulesModal.classList.remove('hidden');
-});
+  $('btnSubmitCreateRoom').addEventListener('click', () => {
+    const gameType = document.querySelector('input[name="createGameType"]:checked')?.value || 'LIARS_DECK';
+    const roomName = $('createRoomName').value.trim();
+    const isPrivate = $('createIsPrivate').checked;
+    const playWithBots =
+      document.querySelector('input[name="createPlayMode"]:checked')?.value === 'BOTS';
+    const botCount = Number(
+      document.querySelector('input[name="createBotCount"]:checked')?.value || 1
+    );
+    const botDifficulty = $('createBotDifficulty').value;
 
-document.getElementById('btnCloseRules').addEventListener('click', () => {
-  rulesModal.classList.add('hidden');
-});
-
-// Sound Toggle
-const btnToggleSound = document.getElementById('btnToggleSound');
-btnToggleSound.addEventListener('click', () => {
-  const isMuted = sound.toggleMute();
-  btnToggleSound.textContent = isMuted ? '[SFX] TẮT' : '[SFX] BẬT';
-});
-
-// Collapsible Right Drawer (< / > Toggle)
-const workspaceGrid = document.getElementById('workspaceGrid');
-const btnToggleSidebar = document.getElementById('btnToggleSidebar');
-const btnCloseSidebarInner = document.getElementById('btnCloseSidebarInner');
-
-function setSidebarOpen(isOpen) {
-  if (!workspaceGrid || !btnToggleSidebar) return;
-  workspaceGrid.classList.toggle('drawer-closed', !isOpen);
-  btnToggleSidebar.setAttribute('aria-expanded', String(isOpen));
-  btnToggleSidebar.textContent = isOpen ? '> ĐÓNG CHAT / LOG' : '< CHAT / LOG';
-}
-
-if (btnToggleSidebar) {
-  btnToggleSidebar.addEventListener('click', () => {
-    const currentlyClosed = workspaceGrid.classList.contains('drawer-closed');
-    setSidebarOpen(currentlyClosed);
+    sendWS({
+      type: 'CREATE_ROOM',
+      gameType,
+      roomName,
+      isPrivate,
+      playWithBots,
+      botCount,
+      botDifficulty
+    });
   });
-}
 
-if (btnCloseSidebarInner) {
-  btnCloseSidebarInner.addEventListener('click', () => {
-    setSidebarOpen(false);
-  });
-}
-
-// Quick Chat Chips & Custom Chat
-document.querySelectorAll('.chat-chip').forEach((chip) => {
-  chip.addEventListener('click', () => {
-    const msg = chip.getAttribute('data-chat');
-    if (msg) {
-      submitPlayerAction('QUICK_CHAT', { messageVi: msg });
+  // Waiting Room
+  $('btnCopyInvite').addEventListener('click', async () => {
+    const code = $('waitInviteCodeText').textContent;
+    try {
+      await navigator.clipboard.writeText(code);
+      showToast(`Đã sao chép mã mời: ${code}`, true);
+    } catch {
+      showToast(`Mã mời của bạn: ${code}`, true);
     }
   });
-});
+  $('btnLeaveWaiting').addEventListener('click', () => {
+    sendWS({ type: 'LEAVE_ROOM' });
+  });
+  $('btnStartMatch').addEventListener('click', () => {
+    sendWS({ type: 'START_MATCH' });
+  });
 
-document.getElementById('customChatForm').addEventListener('submit', (e) => {
-  e.preventDefault();
-  const input = document.getElementById('customChatInput');
-  const val = input.value.trim();
-  if (!val) return;
-  input.value = '';
-  submitPlayerAction('QUICK_CHAT', { messageVi: val });
-});
-
-// Keyboard Shortcuts
-window.addEventListener('keydown', (e) => {
-  if (
-    document.activeElement &&
-    (document.activeElement.tagName === 'INPUT' ||
-      document.activeElement.tagName === 'SELECT' ||
-      document.activeElement.tagName === 'TEXTAREA')
-  ) {
-    return;
-  }
-  if (!lobbyModal.classList.contains('hidden') || !rulesModal.classList.contains('hidden')) {
-    if (e.key === 'Escape') {
-      lobbyModal.classList.add('hidden');
-      rulesModal.classList.add('hidden');
+  // Leave Mid-Match Confirmation (F)
+  $('btnLeaveMatch').addEventListener('click', () => {
+    const state = appState.gameState;
+    if (state && state.phase !== 'GAME_OVER') {
+      $('leaveConfirmModal').style.display = 'flex';
+    } else {
+      sendWS({ type: 'LEAVE_ROOM' });
     }
-    return;
-  }
-  if (!currentState || renderer.isCutscenePlaying()) return;
+  });
+  $('btnCancelLeave').addEventListener('click', () => {
+    $('leaveConfirmModal').style.display = 'none';
+  });
+  $('btnConfirmLeave').addEventListener('click', () => {
+    $('leaveConfirmModal').style.display = 'none';
+    sendWS({ type: 'LEAVE_ROOM' });
+  });
 
-  const human = currentState.players.find((p) => p.id === 'p0');
-  const hand = human?.hand || [];
+  // Liar's Deck Controls
+  $('btnPlayCards').addEventListener('click', () => {
+    if (appState.selectedCardIds.length === 0) return;
+    sendWS({
+      type: 'GAME_ACTION',
+      action: 'PLAY_CARDS',
+      cardIds: appState.selectedCardIds
+    });
+    appState.selectedCardIds = [];
+  });
+  $('btnCallLiar').addEventListener('click', () => {
+    sound.callLiarSiren();
+    sendWS({ type: 'GAME_ACTION', action: 'CALL_LIAR' });
+  });
+  $('btnPassFinal').addEventListener('click', () => {
+    sendWS({ type: 'GAME_ACTION', action: 'PASS_FINAL' });
+  });
+  $('btnPullTrigger').addEventListener('click', () => {
+    sendWS({ type: 'GAME_ACTION', action: 'PULL_TRIGGER' });
+  });
+  $('btnClearSelection').addEventListener('click', () => {
+    appState.selectedCardIds = [];
+    if (appState.gameState) renderGameHUD(appState.gameState);
+  });
 
-  if (['1', '2', '3', '4', '5'].includes(e.key)) {
-    const idx = Number(e.key) - 1;
-    if (hand[idx]) {
-      toggleCardSelection(hand[idx].id);
+  // Poker Liar Bar Controls
+  $('btnPokerCheckCall').addEventListener('click', () => {
+    sendWS({ type: 'GAME_ACTION', action: 'CHECK_CALL' });
+  });
+  $('btnPokerRaise').addEventListener('click', () => {
+    const claimedHandRank = Number($('selectPokerClaim').value || 1);
+    sendWS({ type: 'GAME_ACTION', action: 'RAISE', claimedHandRank });
+  });
+  $('btnPokerAllIn').addEventListener('click', () => {
+    const claimedHandRank = Number($('selectPokerClaim').value || 1);
+    sendWS({ type: 'GAME_ACTION', action: 'ALL_IN', claimedHandRank });
+  });
+  $('btnPokerSwitch').addEventListener('click', () => {
+    const cardId = appState.selectedCardIds[0];
+    if (!cardId) {
+      showToast('Hãy bấm chọn 1 lá bài trên tay trước khi bấm Đổi bài (Switch)!');
+      return;
     }
-  } else if (e.key === ' ' || e.key === 'Enter') {
-    if (currentState.phase === 'TURN_PLAY_OR_CHALLENGE' && !btnPlayCards.disabled) {
+    sendWS({ type: 'GAME_ACTION', action: 'SWITCH', cardId });
+    appState.selectedCardIds = [];
+  });
+  $('btnPokerCallBluff').addEventListener('click', () => {
+    sound.callLiarSiren();
+    sendWS({ type: 'GAME_ACTION', action: 'CALL_BLUFF' });
+  });
+  $('btnPokerFold').addEventListener('click', () => {
+    sendWS({ type: 'GAME_ACTION', action: 'FOLD' });
+  });
+  $('btnPokerPullTrigger').addEventListener('click', () => {
+    sendWS({ type: 'GAME_ACTION', action: 'PULL_TRIGGER' });
+  });
+
+  // Quick Chat & Sidebar
+  document.querySelectorAll('.chat-chip').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      sendWS({ type: 'QUICK_CHAT', message: btn.dataset.chat });
+    });
+  });
+
+  $('btnToggleSidebar').addEventListener('click', () => {
+    $('viewGame').classList.toggle('drawer-closed');
+  });
+  $('btnCloseSidebarInner').addEventListener('click', () => {
+    $('viewGame').classList.add('drawer-closed');
+  });
+
+  // Rules & Sound
+  $('btnOpenRules').addEventListener('click', () => {
+    $('rulesModal').style.display = 'flex';
+  });
+  $('btnCloseRules').addEventListener('click', () => {
+    $('rulesModal').style.display = 'none';
+  });
+  $('btnToggleSound').addEventListener('click', () => {
+    const muted = sound.toggleMute();
+    $('btnToggleSound').textContent = muted ? '[SFX] TẮT' : '[SFX] BẬT';
+  });
+
+  // Keyboard shortcuts for In-Game Liar's Deck
+  document.addEventListener('keydown', (e) => {
+    if (appState.currentView !== 'GAME') return;
+    if (e.target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+    const key = e.key.toUpperCase();
+    if (e.code === 'Space' && !$('btnPlayCards').disabled && $('btnPlayCards').style.display !== 'none') {
       e.preventDefault();
-      btnPlayCards.click();
-    } else if (
-      currentState.phase === 'ROULETTE_PENALTY' &&
-      !btnPullTrigger.disabled &&
-      btnPullTrigger.style.display !== 'none'
-    ) {
-      e.preventDefault();
-      btnPullTrigger.click();
-    } else if (
-      (currentState.phase === 'ROUND_END' || currentState.phase === 'GAME_OVER') &&
-      !btnNextRound.disabled &&
-      btnNextRound.style.display !== 'none'
-    ) {
-      e.preventDefault();
-      btnNextRound.click();
+      $('btnPlayCards').click();
+    } else if (key === 'L' && !$('btnCallLiar').disabled && $('btnCallLiar').style.display !== 'none') {
+      $('btnCallLiar').click();
+    } else if (key === 'P' && $('btnPassFinal').style.display !== 'none') {
+      $('btnPassFinal').click();
+    } else if (key === 'R' && $('btnPullTrigger').style.display !== 'none') {
+      $('btnPullTrigger').click();
+    } else if (key === 'X' && $('btnClearSelection').style.display !== 'none') {
+      $('btnClearSelection').click();
     }
-  } else if (e.key.toLowerCase() === 'l') {
-    if (!btnCallLiar.disabled && btnCallLiar.style.display !== 'none') {
-      btnCallLiar.click();
-    }
-  } else if (e.key.toLowerCase() === 'p') {
-    if (!btnPassFinal.disabled && btnPassFinal.style.display !== 'none') {
-      btnPassFinal.click();
-    }
-  } else if (e.key.toLowerCase() === 'r') {
-    if (!btnPullTrigger.disabled && btnPullTrigger.style.display !== 'none') {
-      btnPullTrigger.click();
-    }
-  }
-});
+  });
+}
 
-// Boot initial state
-loadInitialState();
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initApp);
+} else {
+  initApp();
+}

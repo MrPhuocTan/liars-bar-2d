@@ -6,7 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test tests/engine.test.js tests/e2e_qa_verify.mjs"
+    "test": "node --test tests/engine.test.js tests/poker.test.js tests/e2e_qa_verify.mjs"
   },
   "engines": {
     "node": ">=18.0.0"

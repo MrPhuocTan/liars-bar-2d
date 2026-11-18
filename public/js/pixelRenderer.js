@@ -9,7 +9,7 @@
  *    - User clicks Shoot:
  *      * FATAL: Bullet shatters the Shooter's Avatar into flying pixel fragments
  *      * BLANK: No flash/explosion; cylinder rotates 1 notch + "TÍCH! (KHÔNG CÓ ĐẠN)"
- *      * DODGE (1%): Avatar shrinks and jumps high as bullet streaks past underneath + "HÚ HỒN, NÉ ĐƯỢC NHÉ!"
+ *      * DODGE (5%): Avatar shrinks and jumps high as bullet streaks past underneath + "Hú hồn, may mà né được, lêu lêu con gà kia!"
  */
 
 const PIXEL_PALETTES = {
@@ -40,6 +40,20 @@ const PIXEL_PALETTES = {
     muzzle: '#ffb4a2',
     shirt: '#2d4739',
     eye: '#120d0a'
+  },
+  cat: {
+    main: '#2b2d42',
+    ear: '#8d99ae',
+    muzzle: '#edf2f4',
+    shirt: '#5c2a4d',
+    eye: '#3cd070'
+  },
+  owl: {
+    main: '#8c5a3c',
+    ear: '#d4a373',
+    muzzle: '#faedcd',
+    shirt: '#283618',
+    eye: '#f4b41b'
   }
 };
 
@@ -50,6 +64,8 @@ const RANK_COLORS = {
   J: '#3cd070',
   D: '#e03c3c'
 };
+
+const SUIT_SYMBOLS = { S: '♠', H: '♥', D: '♦', C: '♣' };
 
 export class PixelTableRenderer {
   constructor(canvas, soundFX = null) {
@@ -156,8 +172,10 @@ export class PixelTableRenderer {
     this._drawTavernTable(ctx, w, h);
 
     if (this.state) {
-      // 3. Draw Center Pot & Key Card Banner
-      this._drawCenterPotAndReveal(ctx, w, h, this.state);
+      // 3. Draw Center Pot & Key Card Banner (hidden during active cutscene to prevent text overlap)
+      if (!this.cutscene) {
+        this._drawCenterPotAndReveal(ctx, w, h, this.state);
+      }
 
       // 4. Draw 4 Player Seats around the table
       this._drawPlayersAroundTable(ctx, w, h, this.state);
@@ -197,6 +215,10 @@ export class PixelTableRenderer {
       this._drawCallLiarRevealCutscene(ctx, w, h, cs, elapsed, progress);
     } else if (cs.type === 'ROULETTE_SHOT') {
       this._drawRouletteShotCutscene(ctx, w, h, cs, elapsed, progress);
+    } else if (cs.type === 'POKER_SHOWDOWN' || cs.type === 'POKER_BLUFF_REVEAL') {
+      this._drawPokerShowdownCutscene(ctx, w, h, cs, progress);
+    } else if (cs.type === 'STREET_REVEAL') {
+      this._drawPokerStreetCutscene(ctx, w, h, cs, progress);
     }
 
     if (progress >= 1) {
@@ -219,25 +241,27 @@ export class PixelTableRenderer {
     const cy = Math.floor(h / 2);
     const { roundNumber = 1, tableRank = 'K' } = cs.payload;
 
-    // Semi-transparent stage backdrop
-    ctx.fillStyle = 'rgba(12, 8, 6, 0.72)';
+    // Semi-transparent stage backdrop (lighter so table stays vivid)
+    ctx.fillStyle = 'rgba(14, 10, 8, 0.42)';
     ctx.fillRect(0, 0, w, h);
 
-    // Stage 1: Deck Shuffle (0.0 -> 0.28)
-    if (progress < 0.28) {
+    // Stage 1: Deck Shuffle (~3s visible shuffling: 0.0 -> 0.58)
+    if (progress < 0.58) {
       if (!cs.triggeredMarks.has('shuffle') && this.sound) {
         cs.triggeredMarks.add('shuffle');
         this.sound.deckShuffle();
       }
-      const localP = progress / 0.28;
-      const splitOffset = Math.sin(localP * Math.PI * 6) * 34;
+      const localP = progress / 0.58;
+      const splitOffset = Math.sin(localP * Math.PI * 10) * 38;
 
       this._drawHeadlineBanner(
         ctx,
         cx,
         cy - 118,
-        `VÁN ${roundNumber} — ĐANG XÀO BỘ BÀI 20 LÁ...`,
-        'Chuẩn bị lật lá bài KEY (Bài Chủ) của ván đấu',
+        `VÁN ${roundNumber} — ĐANG XÀO BÀI...`,
+        this.state?.gameType === 'POKER_LIAR_BAR'
+          ? 'Chuẩn bị chia 2 lá tẩy & 5 lá chung'
+          : 'Chuẩn bị lật lá bài KEY (Bài Chủ) của ván đấu',
         '#f4b41b'
       );
 
@@ -252,13 +276,13 @@ export class PixelTableRenderer {
       return;
     }
 
-    // Stage 2: Flip Top Card to Reveal the KEY CARD of the Round (0.28 -> 0.58)
-    if (progress < 0.58) {
+    // Stage 2: Flip Top Card to Reveal the KEY CARD of the Round (0.58 -> 0.72)
+    if (progress < 0.72 && this.state?.gameType !== 'POKER_LIAR_BAR') {
       if (!cs.triggeredMarks.has('keyReveal') && this.sound) {
         cs.triggeredMarks.add('keyReveal');
         this.sound.keyCardReveal();
       }
-      const localP = (progress - 0.28) / 0.3;
+      const localP = (progress - 0.58) / 0.14;
       const zoom = 1.0 + Math.sin(Math.min(1, localP * 1.4) * (Math.PI / 2)) * 0.95;
       const flipCos = Math.cos(Math.min(1, localP * 1.5) * Math.PI);
       const scaleX = Math.max(0.08, Math.abs(flipCos));
@@ -290,11 +314,13 @@ export class PixelTableRenderer {
       return;
     }
 
-    // Stage 3: Deal cards flying out to each alive player (0.58 -> 1.0)
-    const dealP = (progress - 0.58) / 0.42;
+    // Stage 3: Deal all cards (5 per player in Liar's Deck, 2 in Poker) flying out to each alive player
+    const dealStart = this.state?.gameType === 'POKER_LIAR_BAR' ? 0.58 : 0.72;
+    const dealP = Math.max(0, Math.min(1, (progress - dealStart) / (1 - dealStart)));
     const alivePlayers = (this.state?.players || []).filter((p) => p.alive);
     const seatCoords = this._getSeatCoordinates(w, h);
-    const totalFlights = Math.max(1, alivePlayers.length * 2); // 2 visible waves of flying cards
+    const cardsPerPlayer = this.state?.gameType === 'POKER_LIAR_BAR' ? 2 : 5;
+    const totalFlights = Math.max(1, alivePlayers.length * cardsPerPlayer);
     const activeFlightIdx = Math.min(totalFlights - 1, Math.floor(dealP * totalFlights));
     const singleFlightP = (dealP * totalFlights) % 1;
 
@@ -307,13 +333,18 @@ export class PixelTableRenderer {
     const targetPlayer = alivePlayers[activeFlightIdx % alivePlayers.length] || alivePlayers[0];
     const targetSeat = seatCoords[targetPlayer?.seatIndex || 0] || { x: cx, y: h - 60 };
 
+    const isPoker = this.state?.gameType === 'POKER_LIAR_BAR';
     this._drawHeadlineBanner(
       ctx,
       cx,
       cy - 126,
-      `ĐANG CHIA BÀI — KEY VÁN ${roundNumber}: BÀN ${tableRank}`,
-      `Chia 5 lá cho ${targetPlayer?.name || ''} (Người đã chết không được chia bài)`,
-      RANK_COLORS[tableRank] || '#f4b41b'
+      isPoker
+        ? `CHIA BÀI POKER LIAR BAR — VÁN ${roundNumber}`
+        : `ĐANG CHIA BÀI — KEY VÁN ${roundNumber}: BÀN ${tableRank}`,
+      isPoker
+        ? `Chia 2 lá tẩy cho ${targetPlayer?.name || ''}...`
+        : `Chia 5 lá cho ${targetPlayer?.name || ''} (Người đã chết không được chia bài)`,
+      isPoker ? '#f4b41b' : RANK_COLORS[tableRank] || '#f4b41b'
     );
 
     // Center deck
@@ -329,28 +360,44 @@ export class PixelTableRenderer {
   }
 
   /**
-   * CUTSCENE 2: PLAY_CARDS (Duration ~2100ms)
-   * - Shows Player Name + Number of Cards Played
-   * - Shows the 1..3 face-down cards LARGE in center of screen, then shrinks them down into the table pot
+   * CUTSCENE 2: PLAY_CARDS (Duration ~2800ms)
+   * - Launches 1..3 cards directly from the acting player's seat/hand (Bottom for User, Left/Top/Right for Opponents)
+   * - Phase 1 (0.00 -> 0.38): Cards fly from player's hand/seat to screen center and zoom up large (0.85x -> 2.15x)
+   * - Phase 2 (0.38 -> 0.68): Cards hold large in center under Player Name + Card Count banner
+   * - Phase 3 (0.68 -> 1.00): Cards shrink down (2.15x -> 0.95x) and land on the center table pot
    */
   _drawPlayCardsCutscene(ctx, w, h, cs, elapsed, progress) {
     const cx = Math.floor(w / 2);
     const cy = Math.floor(h / 2);
     const {
+      seatIndex = 0,
       playerName = 'Người Chơi',
       cardCount = 1,
       claimedRank = 'K',
       emptiedHand = false
     } = cs.payload;
 
-    ctx.fillStyle = 'rgba(12, 8, 6, 0.58)';
+    ctx.fillStyle = 'rgba(12, 8, 6, 0.62)';
     ctx.fillRect(0, 0, w, h);
+
+    // Determine origin point (for seatIndex 0 = Human hand at bottom of canvas; for 1/2/3 = opponent seat)
+    const seatCoords = this._getSeatCoordinates(w, h);
+    const originSeat =
+      seatIndex === 0
+        ? { x: cx, y: h - 18 }
+        : seatCoords[seatIndex] || { x: cx, y: h - 40 };
+
+    // Play whoosh sound as cards launch from hand/seat
+    if (!cs.triggeredMarks.has('launchWhoosh') && this.sound) {
+      cs.triggeredMarks.add('launchWhoosh');
+      this.sound.cardDealWhoosh(seatIndex);
+    }
 
     // Headline showing Player Name and Card Count clearly below it
     this._drawHeadlineBanner(
       ctx,
       cx,
-      cy - 126,
+      cy - 132,
       `${playerName.toUpperCase()}`,
       `ĐÁNH ${cardCount} LÁ BÀI ÚP — TUYÊN BỐ: "${cardCount} LÁ ${claimedRank}"${
         emptiedHand ? ' (ĐÃ HẾT BÀI TRÊN TAY!)' : ''
@@ -358,18 +405,71 @@ export class PixelTableRenderer {
       '#f4b41b'
     );
 
-    // Cards start HUGE (scale 2.15) for first 38% of cutscene, then shrink down (2.15 -> 0.95) into table center
-    const shrinkP = progress < 0.38 ? 0 : (progress - 0.38) / 0.62;
-    const easeP = 1 - Math.pow(1 - shrinkP, 3);
-    const scale = 2.15 - easeP * 1.2;
-    const yOffset = -28 + easeP * 26;
+    let scale = 2.15;
+    let centerX = cx;
+    let centerY = cy - 16;
+
+    if (progress < 0.38) {
+      // Phase 1: Launch from player's hand/seat to center and zoom up (0.85 -> 2.15)
+      const launchP = progress / 0.38;
+      const easeOut = 1 - Math.pow(1 - launchP, 3);
+      centerX = originSeat.x + (cx - originSeat.x) * easeOut;
+      centerY =
+        originSeat.y +
+        (cy - 16 - originSeat.y) * easeOut -
+        Math.sin(launchP * Math.PI) * 32;
+      scale = 0.85 + easeOut * 1.3;
+
+      // Draw pixel motion trail from originSeat toward current card position
+      ctx.strokeStyle = 'rgba(244, 180, 27, 0.38)';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(originSeat.x, originSeat.y);
+      ctx.lineTo(centerX, centerY);
+      ctx.stroke();
+    } else if (progress < 0.68) {
+      // Phase 2: Hold large in center so everyone sees the cards clearly
+      const pulse = Math.sin(((progress - 0.38) / 0.3) * Math.PI) * 0.08;
+      scale = 2.15 + pulse;
+      centerX = cx;
+      centerY = cy - 16;
+    } else {
+      // Phase 3: SLAM down onto the table ("RẦM!")
+      if (!cs.triggeredMarks.has('landSlap')) {
+        cs.triggeredMarks.add('landSlap');
+        this.shakeFrames = 14;
+        if (this.sound) {
+          this.sound.cardSlam ? this.sound.cardSlam() : this.sound.cardPlay(cardCount);
+        }
+      }
+      const shrinkP = (progress - 0.68) / 0.32;
+      const easeIn = 1 - Math.pow(1 - shrinkP, 3);
+      scale = 2.15 - easeIn * 1.15;
+      centerX = cx;
+      centerY = cy - 16 + easeIn * 22;
+
+      // Impact shockwave & "RẦM!" comic burst
+      if (shrinkP > 0.15) {
+        const ringR = Math.round(45 + shrinkP * 110);
+        ctx.strokeStyle = `rgba(244, 180, 27, ${Math.max(0, 1 - shrinkP)})`;
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(cx, cy + 6, ringR, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.fillStyle = '#ff4d4d';
+        ctx.font = '900 28px "Courier New", monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('RẦM!!', cx, cy - 92);
+      }
+    }
 
     const cardW = Math.round(50 * scale);
     const cardH = Math.round(70 * scale);
     const gap = Math.round(14 * scale);
     const totalW = cardCount * cardW + (cardCount - 1) * gap;
-    const startX = Math.floor(cx - totalW / 2);
-    const cardY = Math.floor(cy + yOffset - cardH / 2);
+    const startX = Math.floor(centerX - totalW / 2);
+    const cardY = Math.floor(centerY - cardH / 2);
 
     for (let i = 0; i < cardCount; i += 1) {
       const x = startX + i * (cardW + gap);
@@ -456,7 +556,9 @@ export class PixelTableRenderer {
       cy - 132,
       `XÉT TỪNG LÁ BÀI CỦA ${accusedName.toUpperCase()} (BÀN ${tableRank})`,
       progress >= 0.8
-        ? verdictTag === 'REAL'
+        ? verdictTag === 'DEVIL'
+          ? `BẪY ÁC QUỶ (DEVIL)! TẤT CẢ NGƯỜI CHƠI KHÁC PHẢI BẮN SÚNG!`
+          : verdictTag === 'REAL'
           ? `KẾT QUẢ: REAL (BÀI THẬT 100%) -> ${shooterName} BẮT SAI PHẢI BẮN SÚNG!`
           : `KẾT QUẢ: FAKE (PHÁT HIỆN BÀI GIẢ!) -> ${shooterName} PHẢI BẮN SÚNG!`
         : `Người bắt bài: ${callerName} — Đang lật từng lá...`,
@@ -482,7 +584,7 @@ export class PixelTableRenderer {
       if (flipCos > 0) {
         this._drawLargeCardBack(ctx, x, cardY, curW, cardH);
       } else {
-        const tag = card.rank === 'D' ? 'ÁC QUỶ!' : isMatch ? 'REAL / THẬT' : 'FAKE / GIẢ!';
+        const tag = card.rank === 'D' ? '' : isMatch ? 'REAL / THẬT' : 'FAKE / GIẢ!';
         this._drawLargeCardFace(ctx, x, cardY, curW, cardH, card.rank, tag, isMatch);
       }
     });
@@ -511,17 +613,18 @@ export class PixelTableRenderer {
     const pen = state.pendingPenalty;
     if (!pen) return;
 
-    const shooterId = pen.targetPlayerIds?.[0];
+    const shooterId = pen.targetPlayerId || pen.targetPlayerIds?.[0];
     const shooter = state.players.find((p) => p.id === shooterId) || state.players[0];
+    const isPokerPen = Boolean(pen.reason);
     const verdictTag = pen.verdictTag || (pen.wasLying ? 'FAKE' : 'REAL');
-    const isReal = verdictTag === 'REAL';
+    const isReal = !isPokerPen && verdictTag === 'REAL';
 
     ctx.fillStyle = 'rgba(12, 8, 6, 0.84)';
     ctx.fillRect(0, 0, w, h);
 
-    // Stage frame
-    const stageW = 540;
-    const stageH = 260;
+    // Stage frame (with bottom space reserved for the inline BẮN SÚNG button right inside the gun box!)
+    const stageW = 560;
+    const stageH = 296;
     const sx = Math.floor(cx - stageW / 2);
     const sy = Math.floor(cy - stageH / 2);
 
@@ -530,13 +633,24 @@ export class PixelTableRenderer {
     ctx.fillStyle = '#18100c';
     ctx.fillRect(sx, sy, stageW, stageH);
 
-    // Top REAL / FAKE Header inside stage
-    const headerBanner =
-      verdictTag === 'DEVIL'
-        ? 'DEVIL TRAP — BẪY ÁC QUỶ KÍCH HOẠT!'
-        : isReal
-        ? `REAL (BÀI THẬT 100%) — ${shooter.name.toUpperCase()} BẮT SAI PHẢI BẮN!`
-        : `FAKE (BÀI GIẢ / NÓI DỐI) — ${shooter.name.toUpperCase()} PHẢI BẮN!`;
+    // Top Header inside stage
+    let headerBanner = '';
+    if (isPokerPen) {
+      const reasonMap = {
+        SHOWDOWN_LOSS: `THUA SHOWDOWN — ${shooter.name.toUpperCase()} BẮN ${pen.shotsRemaining || 1} PHÁT!`,
+        COWARD_FOLD: `BỎ BÀI (FOLD) — ${shooter.name.toUpperCase()} CHỊU PHẠT 1 PHÁT!`,
+        CAUGHT_BLUFFING: `BẮT LIAR THÀNH CÔNG — ${shooter.name.toUpperCase()} BẮN ${pen.shotsRemaining || 1} PHÁT!`,
+        FAILED_BLUFF_CALL: `BẮT NHẦM BÀI THẬT — ${shooter.name.toUpperCase()} BẮN ${pen.shotsRemaining || 1} PHÁT!`
+      };
+      headerBanner = reasonMap[pen.reason] || `PHẠT ĐẠN POKER — ${shooter.name.toUpperCase()}!`;
+    } else {
+      headerBanner =
+        verdictTag === 'DEVIL'
+          ? 'BẪY DEVIL — TẤT CẢ NGƯỜI CHƠI KHÁC PHẢI BẮN!'
+          : isReal
+          ? `REAL (BÀI THẬT 100%) — ${shooter.name.toUpperCase()} BẮT SAI PHẢI BẮN!`
+          : `FAKE (BÀI GIẢ / NÓI DỐI) — ${shooter.name.toUpperCase()} PHẢI BẮN!`;
+    }
 
     ctx.fillStyle = isReal ? '#3cd070' : '#e03c3c';
     ctx.font = 'bold 14px "Courier New", monospace';
@@ -546,24 +660,24 @@ export class PixelTableRenderer {
 
     // Left: Zoomed Shooter Avatar (96x96)
     const avaX = sx + 56;
-    const avaY = sy + 64;
+    const avaY = sy + 58;
     this._drawScaledCharacterAvatar(ctx, avaX, avaY, 6, shooter.avatarKey, 'sweat', true);
     ctx.fillStyle = '#f5e6d3';
     ctx.font = 'bold 12px "Courier New", monospace';
-    ctx.fillText(this._fitTextToWidth(ctx, shooter.name, 150), avaX + 48, avaY + 114);
+    ctx.fillText(this._fitTextToWidth(ctx, shooter.name, 150), avaX + 48, avaY + 112);
 
     // Center: Zoomed Revolver pointing at Avatar
-    this._drawZoomedRevolver(ctx, cx - 26, sy + 92, false);
+    this._drawZoomedRevolver(ctx, cx - 26, sy + 86, false);
 
-    // Right: Giant 6-Chamber Cylinder spinning 1 full revolution (0 -> 360 deg over first 1.1s)
+    // Right: Giant 6-Chamber Cylinder spinning 1 full revolution slowly over 2400ms
     const elapsedStage = Math.max(0, now - (this.rouletteStageEnteredAt || now));
-    const spinProgress = Math.min(1, elapsedStage / 1100);
+    const spinProgress = Math.min(1, elapsedStage / 2400);
     const easeSpin = 1 - Math.pow(1 - spinProgress, 3);
     const angleRad = easeSpin * Math.PI * 2;
     this._drawZoomedCylinder(
       ctx,
       sx + stageW - 96,
-      sy + 114,
+      sy + 108,
       40,
       shooter.revolver?.shotsTaken || 0,
       angleRad
@@ -573,20 +687,20 @@ export class PixelTableRenderer {
     ctx.font = 'bold 11px "Courier New", monospace';
     ctx.fillText(
       spinProgress < 1
-        ? 'ĐANG QUAY 1 VÒNG Ổ ĐẠN...'
-        : `ĐÃ QUAY XONG (${shooter.revolver?.shotsTaken || 0}/6) — BẤM NÚT "BẮN SÚNG" BÊN DƯỚI!`,
+        ? `ĐANG QUAY 1 VÒNG Ổ ĐẠN... (${Math.round(spinProgress * 100)}%)`
+        : `Ổ ĐẠN ĐÃ SẴN SÀNG (${shooter.revolver?.shotsTaken || 0}/6 VIÊN ĐÃ THỬ) — BẤM NÚT BẮN NGAY TRÊN BẢNG!`,
       cx,
-      sy + stageH - 22
+      sy + 196
     );
   }
 
   /**
-   * CUTSCENE 4: ROULETTE_SHOT (Duration ~3000ms)
-   * - 0.00 -> 0.25: Cylinder rotates 1 notch (+60 deg)
-   * - 0.25 -> 1.00:
+   * CUTSCENE 4: ROULETTE_SHOT (Duration ~4600ms — Slow & Clear)
+   * - 0.00 -> 0.32 (~1.5s): Cylinder rotates 1 notch (+60 deg) slowly before hammer strikes
+   * - 0.32 -> 1.00 (~3.1s):
    *   * FATAL: Bullet streaks and shatters Shooter's Avatar into 16 flying pixel pieces!
    *   * BLANK: No muzzle flash/effect; cylinder rotated 1 notch + "TÍCH! KHÔNG CÓ ĐẠN"
-   *   * DODGE (1%): Avatar shrinks (0.6x) and jumps high up dodging the bullet + "HÚ HỒN, NÉ ĐƯỢC NHÉ!"
+   *   * DODGE (5%): Avatar shrinks (0.6x) and jumps high up dodging the bullet + "Hú hồn, may mà né được, lêu lêu con gà kia!"
    */
   _drawRouletteShotCutscene(ctx, w, h, cs, elapsed, progress) {
     const cx = Math.floor(w / 2);
@@ -602,8 +716,8 @@ export class PixelTableRenderer {
     ctx.fillStyle = 'rgba(12, 8, 6, 0.88)';
     ctx.fillRect(0, 0, w, h);
 
-    const stageW = 540;
-    const stageH = 268;
+    const stageW = 560;
+    const stageH = 280;
     const sx = Math.floor(cx - stageW / 2);
     const sy = Math.floor(cy - stageH / 2);
 
@@ -628,13 +742,20 @@ export class PixelTableRenderer {
     const avaBaseX = sx + 56;
     const avaBaseY = sy + 68;
 
-    // Phase A (0.0 -> 0.25): Cylinder rotates 1 notch before hammer strikes
-    const notchP = Math.min(1, progress / 0.25);
-    const cylinderAngle = notchP * (Math.PI / 3);
-    const afterStrikeP = progress < 0.25 ? 0 : (progress - 0.25) / 0.75;
+    // Phase A (0.0 -> 0.36): Cylinder performs a smooth 1-full-turn spin before hammer strikes
+    const strikeThreshold = 0.36;
+    const spinP = Math.min(1, progress / strikeThreshold);
+    const easeSpin = spinP < 0.5 ? 4 * spinP * spinP * spinP : 1 - Math.pow(-2 * spinP + 2, 3) / 2;
+    const cylinderAngle = easeSpin * Math.PI * 2;
+    const afterStrikeP = progress < strikeThreshold ? 0 : (progress - strikeThreshold) / (1 - strikeThreshold);
 
-    // Trigger sound exactly at hammer strike (progress >= 0.25)
-    if (progress >= 0.25 && !cs.triggeredMarks.has('shotSfx')) {
+    if (!cs.triggeredMarks.has('spinSfx') && this.sound) {
+      cs.triggeredMarks.add('spinSfx');
+      this.sound.cylinderSpin();
+    }
+
+    // Trigger sound exactly at hammer strike (progress >= 0.36)
+    if (progress >= strikeThreshold && !cs.triggeredMarks.has('shotSfx')) {
       cs.triggeredMarks.add('shotSfx');
       if (outcomeType === 'FATAL') {
         if (this.sound) this.sound.revolverBang();
@@ -646,7 +767,7 @@ export class PixelTableRenderer {
       }
     }
 
-    // Draw Right-side Cylinder rotating 1 notch
+    // Draw Right-side Cylinder spinning smoothly 1 full turn
     this._drawZoomedCylinder(
       ctx,
       sx + stageW - 96,
@@ -656,32 +777,63 @@ export class PixelTableRenderer {
       cylinderAngle
     );
 
-    // Draw Center Zoomed Revolver (with muzzle fire only on FATAL or DODGE)
+    // Draw Center Zoomed Revolver with recoil + muzzle fire / smoke / air puff
+    const recoilKick =
+      progress >= strikeThreshold && afterStrikeP < 0.35
+        ? Math.sin((afterStrikeP / 0.35) * Math.PI) * (outcomeType === 'BLANK' ? 5 : 14)
+        : 0;
     const showMuzzleFire =
-      progress >= 0.25 &&
-      progress <= 0.55 &&
+      progress >= strikeThreshold &&
+      afterStrikeP <= 0.28 &&
       (outcomeType === 'FATAL' || outcomeType === 'DODGE');
-    this._drawZoomedRevolver(ctx, cx - 26, sy + 96, showMuzzleFire);
+    this._drawZoomedRevolver(ctx, cx - 26 + Math.round(recoilKick), sy + 96 - Math.round(recoilKick * 0.4), showMuzzleFire);
+
+    // Gunpowder Smoke (FATAL / DODGE) or Compressed Air Puff (BLANK)
+    if (progress >= strikeThreshold) {
+      const muzzleX = cx - 72;
+      const muzzleY = sy + 112;
+      if (outcomeType === 'FATAL' || outcomeType === 'DODGE') {
+        for (let sIdx = 0; sIdx < 7; sIdx += 1) {
+          const drift = afterStrikeP * (55 + sIdx * 14);
+          const puffX = Math.round(muzzleX - drift * 0.85 - sIdx * 6);
+          const puffY = Math.round(muzzleY - afterStrikeP * (28 + (sIdx % 3) * 14) + Math.sin(sIdx * 2) * 8);
+          const puffSize = Math.round(10 + afterStrikeP * 18 + (sIdx % 2) * 6);
+          const alpha = Math.max(0, 0.72 * (1 - afterStrikeP));
+          ctx.fillStyle = `rgba(215, 210, 205, ${alpha.toFixed(2)})`;
+          ctx.fillRect(puffX, puffY, puffSize, puffSize);
+        }
+      } else {
+        // BLANK: Crisp compressed air puff shooting out of the barrel
+        for (let aIdx = 0; aIdx < 5; aIdx += 1) {
+          const airDist = afterStrikeP * (130 + aIdx * 18);
+          const airX = Math.round(muzzleX - airDist);
+          const airY = Math.round(muzzleY + (aIdx - 2) * 6 * (1 + afterStrikeP));
+          const alpha = Math.max(0, 0.85 * (1 - afterStrikeP * 1.1));
+          ctx.fillStyle = `rgba(210, 240, 255, ${alpha.toFixed(2)})`;
+          ctx.fillRect(airX, airY, 14 + aIdx * 3, 4);
+        }
+      }
+    }
 
     // Draw Left-side Shooter Avatar according to outcomeType:
-    if (progress < 0.25) {
+    if (progress < strikeThreshold) {
       this._drawScaledCharacterAvatar(ctx, avaBaseX, avaBaseY, 6, avatarKey, 'shock', true);
       ctx.fillStyle = '#f4b41b';
       ctx.font = 'bold 13px "Courier New", monospace';
-      ctx.fillText('Ổ ĐẠN XOAY 1 NẤC... BÓP CÒ!', cx, sy + stageH - 24);
+      ctx.fillText('Ổ ĐẠN ĐANG XOAY 1 VÒNG... CHUẨN BỊ BÓP CÒ!', cx, sy + stageH - 28);
       return;
     }
 
     if (outcomeType === 'BLANK') {
-      // BLANK: No bullet, no explosion, avatar sighs in relief, "TÍCH! KHÔNG CÓ ĐẠN"
+      // BLANK: Compressed air puff + "TÍCH! PHỤT HƠI — KHÔNG CÓ ĐẠN"
       this._drawScaledCharacterAvatar(ctx, avaBaseX, avaBaseY, 6, avatarKey, 'sweat', true);
 
-      // Draw crisp "TÍCH!" mechanical click tag above gun hammer
+      // Draw crisp "TÍCH! PHỤT!" mechanical click tag above gun hammer
       ctx.fillStyle = '#3cd070';
-      ctx.fillRect(cx - 56, sy + 54, 112, 24);
+      ctx.fillRect(cx - 72, sy + 54, 144, 24);
       ctx.fillStyle = '#120c09';
       ctx.font = 'bold 12px "Courier New", monospace';
-      ctx.fillText('TÍCH! (RỖNG)', cx, sy + 66);
+      ctx.fillText('TÍCH! (XÌ HƠI)', cx, sy + 66);
 
       ctx.fillStyle = '#3cd070';
       ctx.font = 'bold 13px "Courier New", monospace';
@@ -691,37 +843,41 @@ export class PixelTableRenderer {
         sy + stageH - 24
       );
     } else if (outcomeType === 'DODGE') {
-      // DODGE (1%): Avatar shrinks down (scale 4 instead of 6) and jumps UP following a sine arc while bullet streaks underneath!
-      const jumpArc = Math.sin(Math.min(1, afterStrikeP * 1.4) * Math.PI);
-      const jumpY = Math.round(avaBaseY - jumpArc * 46);
-      const shrinkScale = 4; // shrunk from 6 -> 4
+      // DODGE (5% at 6th chamber): Slow bullet flies toward avatar, avatar jumps high to dodge, speech bubble!
+      const jumpArc = Math.sin(Math.min(1, afterStrikeP * 1.25) * Math.PI);
+      const jumpY = Math.round(avaBaseY - jumpArc * 58);
       this._drawScaledCharacterAvatar(
         ctx,
-        avaBaseX + 16,
+        avaBaseX + 12,
         jumpY,
-        shrinkScale,
+        5,
         avatarKey,
         'victory',
         true
       );
 
-      // Bullet streaking horizontally right past where the head was!
-      const bulletX = Math.round((cx - 30) - afterStrikeP * 240);
-      const bulletY = avaBaseY + 42;
-      if (bulletX > sx + 12) {
-        // Golden bullet + speed trail
-        ctx.fillStyle = 'rgba(244, 180, 27, 0.45)';
-        ctx.fillRect(bulletX + 14, bulletY + 2, 68, 4);
+      // Slow bullet streaking horizontally right past underneath!
+      const bulletX = Math.round((cx - 30) - afterStrikeP * 260);
+      const bulletY = avaBaseY + 46;
+      if (bulletX > sx + 10) {
+        ctx.fillStyle = 'rgba(244, 180, 27, 0.55)';
+        ctx.fillRect(bulletX + 16, bulletY + 2, 76, 4);
         ctx.fillStyle = '#f4b41b';
-        ctx.fillRect(bulletX, bulletY, 14, 8);
+        ctx.fillRect(bulletX, bulletY, 16, 8);
       }
 
-      // Speech banner: "HÚ HỒN, NÉ ĐƯỢC NHÉ!"
+      // Speech bubble from avatar: "Hú hồn, may mà né được, lêu lêu con gà kia!"
+      const bubbleW = 390;
+      const bubbleH = 30;
+      const bx = Math.floor(cx - bubbleW / 2);
+      const by = sy + stageH - 44;
       ctx.fillStyle = '#f4b41b';
-      ctx.fillRect(cx - 170, sy + stageH - 42, 340, 28);
+      ctx.fillRect(bx - 2, by - 2, bubbleW + 4, bubbleH + 4);
       ctx.fillStyle = '#120c09';
-      ctx.font = 'bold 13px "Courier New", monospace';
-      ctx.fillText('1% BẮN HỤT: "HÚ HỒN, NÉ ĐƯỢC NHÉ!"', cx, sy + stageH - 28);
+      ctx.fillRect(bx, by, bubbleW, bubbleH);
+      ctx.fillStyle = '#f4b41b';
+      ctx.font = 'bold 12px "Courier New", monospace';
+      ctx.fillText('Hú hồn, may mà né được, lêu lêu con gà kia!', cx, by + 16);
     } else {
       // FATAL: Bullet strikes and SHATTERS the Shooter's Avatar into 16 flying pixel fragments!
       const bulletTravelP = Math.min(1, afterStrikeP * 4.0);
@@ -863,6 +1019,66 @@ export class PixelTableRenderer {
     ctx.fillText(this._fitTextToWidth(ctx, subtitle, boxW - 24), cx, by + 44);
   }
 
+  _drawPokerStreetCutscene(ctx, w, h, cs, progress) {
+    const cx = Math.floor(w / 2);
+    const cy = Math.floor(h / 2);
+    const { street = 'FLOP', revealedCommunityCount = 3 } = cs.payload;
+    if (!cs.triggeredMarks.has('streetSfx') && this.sound) {
+      cs.triggeredMarks.add('streetSfx');
+      this.sound.keyCardReveal();
+    }
+    ctx.fillStyle = 'rgba(14, 10, 8, 0.48)';
+    ctx.fillRect(0, 0, w, h);
+    this._drawHeadlineBanner(
+      ctx,
+      cx,
+      cy - 20,
+      `VÒNG ${street} — MỞ BÀI CHUNG (${revealedCommunityCount}/5)`,
+      'Hãy tính toán tay bài hoặc tăng cược đạn!',
+      '#f4b41b'
+    );
+  }
+
+  _drawPokerShowdownCutscene(ctx, w, h, cs, progress) {
+    const cx = Math.floor(w / 2);
+    const cy = Math.floor(h / 2);
+    const { results = [], loserName = '', winnerName = '', wasLying, claimedHandNameVi } = cs.payload;
+    if (!cs.triggeredMarks.has('showdownSfx') && this.sound) {
+      cs.triggeredMarks.add('showdownSfx');
+      this.sound.cardFlip(wasLying === false);
+    }
+    ctx.fillStyle = 'rgba(14, 10, 8, 0.72)';
+    ctx.fillRect(0, 0, w, h);
+
+    const title = claimedHandNameVi
+      ? `BẮT LIAR POKER: ${wasLying ? 'NÓI DỐI!' : 'BÀI THẬT!'}`
+      : `SHOWDOWN POKER LIAR BAR`;
+    const sub = claimedHandNameVi
+      ? `Tuyên bố ${claimedHandNameVi} -> ${loserName} thua & phải bắn súng!`
+      : `${winnerName} thắng vòng! ${loserName} yếu nhất phải bắn súng!`;
+    this._drawHeadlineBanner(ctx, cx, cy - 110, title, sub, wasLying === false ? '#3cd070' : '#e03c3c');
+
+    const rowY = cy - 40;
+    results.slice(0, 4).forEach((r, idx) => {
+      const y = rowY + idx * 36;
+      ctx.fillStyle = r.playerName === loserName ? '#6b1d1d' : '#1b3b28';
+      ctx.fillRect(cx - 240, y, 480, 30);
+      ctx.strokeStyle = r.playerName === loserName ? '#e03c3c' : '#3cd070';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(cx - 240, y, 480, 30);
+      ctx.fillStyle = '#fdf8ec';
+      ctx.font = 'bold 12px "Courier New", monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const cardsTxt = (r.hand || []).map((c) => c.labelVi || c.rank).join(' ');
+      ctx.fillText(
+        this._fitTextToWidth(ctx, `${r.playerName}: [${cardsTxt}] — ${r.handNameVi}`, 460),
+        cx,
+        y + 15
+      );
+    });
+  }
+
   _drawVerdictStamp(ctx, cx, cy, text, color) {
     ctx.font = 'bold 14px "Courier New", monospace';
     const fitted = this._fitTextToWidth(ctx, text, 540);
@@ -900,48 +1116,129 @@ export class PixelTableRenderer {
     }
   }
 
+  _drawCardCornerIndices(ctx, x, y, w, h, text, color, fontSize, padX = 5, padY = 4) {
+    ctx.fillStyle = color;
+    ctx.font = `bold ${fontSize}px "Courier New", monospace`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText(text, x + padX, y + padY);
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(text, x + w - padX, y + h - padY);
+  }
+
+  _drawPokerCardFace(ctx, x, y, w, h, card) {
+    ctx.fillStyle = '#0d0907';
+    ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
+    ctx.fillStyle = '#f4b41b';
+    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = '#fdf8ec';
+    ctx.fillRect(x + 2, y + 2, w - 4, h - 4);
+    ctx.strokeStyle = '#e0d3bd';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 4.5, y + 4.5, w - 9, h - 9);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x + 2, y + 2, w - 4, h - 4);
+    ctx.clip();
+
+    const isRed = card.suit === 'H' || card.suit === 'D';
+    const mainCol = isRed ? '#c92a2a' : '#1a1412';
+    const suitSym = SUIT_SYMBOLS[card.suit] || '';
+    const cornerTxt = `${card.rank}${suitSym}`;
+
+    this._drawCardCornerIndices(ctx, x, y, w, h, cornerTxt, mainCol, 10, 4, 4);
+
+    ctx.fillStyle = mainCol;
+    ctx.font = 'bold 20px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(suitSym || card.rank, Math.floor(x + w / 2), Math.floor(y + h / 2));
+
+    ctx.restore();
+  }
+
   _drawLargeCardFace(ctx, x, y, w, h, rank, bottomLabel, isMatch) {
-    const borderCol = isMatch ? '#3cd070' : '#e03c3c';
+    const isDevil = rank === 'D';
+    const borderCol = isDevil ? '#e03c3c' : isMatch ? '#3cd070' : '#e03c3c';
     ctx.fillStyle = borderCol;
     ctx.fillRect(x - 3, y - 3, w + 6, h + 6);
-    ctx.fillStyle = '#fdf6e3';
+    ctx.fillStyle = isDevil ? '#1c080c' : '#fdf8ec';
     ctx.fillRect(x, y, w, h);
 
     if (w >= 26) {
-      ctx.fillStyle = RANK_COLORS[rank] || '#120c09';
-      ctx.font = `bold ${Math.max(16, Math.round(h * 0.34))}px "Courier New", monospace`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(rank, Math.floor(x + w / 2), Math.floor(y + h * 0.42));
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x, y, w, h);
+      ctx.clip();
 
-      if (w >= 48) {
-        ctx.fillStyle = isMatch ? '#1b6e38' : '#a61e1e';
-        ctx.font = 'bold 11px "Courier New", monospace';
-        ctx.fillText(bottomLabel, Math.floor(x + w / 2), Math.floor(y + h * 0.78));
+      if (isDevil) {
+        const cx = Math.floor(x + w / 2);
+        const cy = Math.floor(y + h / 2);
+        const s = Math.max(2, Math.floor(w / 18));
+        ctx.fillStyle = '#ff3b3b';
+        ctx.fillRect(cx - 5 * s, cy - 5 * s, 2 * s, 3 * s);
+        ctx.fillRect(cx + 3 * s, cy - 5 * s, 2 * s, 3 * s);
+        ctx.fillStyle = '#c9182b';
+        ctx.fillRect(cx - 4 * s, cy - 2 * s, 8 * s, 6 * s);
+        ctx.fillStyle = '#ffe066';
+        ctx.fillRect(cx - 3 * s, cy, 2 * s, 2 * s);
+        ctx.fillRect(cx + 1 * s, cy, 2 * s, 2 * s);
+      } else {
+        const mainCol = RANK_COLORS[rank] || '#120c09';
+        if (w >= 42) {
+          this._drawCardCornerIndices(
+            ctx,
+            x,
+            y,
+            w,
+            h,
+            rank,
+            mainCol,
+            Math.max(10, Math.round(w * 0.19)),
+            5,
+            4
+          );
+        }
+
+        ctx.fillStyle = mainCol;
+        ctx.font = `bold ${Math.max(16, Math.round(h * 0.32))}px "Courier New", monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(rank, Math.floor(x + w / 2), Math.floor(y + h * 0.42));
+
+        if (w >= 48 && bottomLabel) {
+          ctx.fillStyle = isMatch ? '#1b6e38' : '#a61e1e';
+          ctx.font = 'bold 10px "Courier New", monospace';
+          ctx.fillText(bottomLabel, Math.floor(x + w / 2), Math.floor(y + h * 0.72));
+        }
       }
+
+      ctx.restore();
     }
   }
 
   _drawTavernBackground(ctx, w, h) {
-    ctx.fillStyle = '#120c09';
+    ctx.fillStyle = '#211510';
     ctx.fillRect(0, 0, w, h);
 
-    ctx.fillStyle = '#19110d';
-    for (let y = 0; y < h; y += 25) {
+    ctx.fillStyle = '#2b1b14';
+    for (let y = 0; y < h; y += 26) {
       ctx.fillRect(0, y, w, 2);
     }
-    for (let x = 0; x < w; x += 60) {
+    for (let x = 0; x < w; x += 64) {
       ctx.fillRect(x, 0, 2, h);
     }
 
-    ctx.strokeStyle = '#3b2416';
+    ctx.strokeStyle = '#6b452d';
     ctx.lineWidth = 4;
     ctx.strokeRect(2, 2, w - 4, h - 4);
 
     const flicker = Math.sin(this.tick * 0.08) * 5;
-    ctx.fillStyle = 'rgba(244, 180, 27, 0.04)';
+    ctx.fillStyle = 'rgba(244, 180, 27, 0.08)';
     ctx.beginPath();
-    ctx.arc(w / 2, h / 2, 220 + flicker, 0, Math.PI * 2);
+    ctx.arc(w / 2, h / 2, 240 + flicker, 0, Math.PI * 2);
     ctx.fill();
   }
 
@@ -951,13 +1248,13 @@ export class PixelTableRenderer {
     const rx = 276;
     const ry = 138;
 
-    ctx.fillStyle = '#3d2314';
+    ctx.fillStyle = '#4f2e1b';
     this._fillPixelEllipse(ctx, cx, cy, rx + 18, ry + 18);
 
-    ctx.fillStyle = '#5c3822';
+    ctx.fillStyle = '#734328';
     this._fillPixelEllipse(ctx, cx, cy, rx + 10, ry + 10);
 
-    ctx.fillStyle = '#163828';
+    ctx.fillStyle = '#1f5438';
     this._fillPixelEllipse(ctx, cx, cy, rx, ry);
 
     ctx.strokeStyle = '#255c42';
@@ -981,9 +1278,9 @@ export class PixelTableRenderer {
   _getSeatCoordinates(w, h) {
     return [
       { x: Math.floor(w * 0.5), y: h - 54, align: 'bottom' },
-      { x: 122, y: Math.floor(h * 0.5), align: 'left' },
-      { x: Math.floor(w * 0.5), y: 54, align: 'top' },
-      { x: w - 122, y: Math.floor(h * 0.5), align: 'right' }
+      { x: 122, y: Math.floor(h * 0.58), align: 'left' },
+      { x: Math.floor(w * 0.5), y: 96, align: 'top' },
+      { x: w - 122, y: Math.floor(h * 0.58), align: 'right' }
     ];
   }
 
@@ -1046,12 +1343,19 @@ export class PixelTableRenderer {
     const textStartX = bx + 64;
     const maxTextW = boxW - 64 - 10;
 
-    // Row 1: Player Name
+    // Row 1: Player Name + Glowing Ring when active turn (C5)
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.font = 'bold 12px "Courier New", monospace';
+    const fittedName = this._fitTextToWidth(ctx, player.name, maxTextW - 6);
+    if (isTurn && player.alive) {
+      const nameW = Math.min(maxTextW, Math.ceil(ctx.measureText(fittedName).width) + 10);
+      const pulseAlpha = 0.55 + 0.45 * Math.sin(this.tick * 0.18);
+      ctx.strokeStyle = `rgba(244, 180, 27, ${pulseAlpha.toFixed(2)})`;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(textStartX - 4, by + 9, nameW, 18);
+    }
     ctx.fillStyle = !player.alive ? '#776b63' : isTurn ? '#f4b41b' : '#f5e6d3';
-    const fittedName = this._fitTextToWidth(ctx, player.name, maxTextW);
     ctx.fillText(fittedName, textStartX, by + 18);
 
     // Row 2: Card Count + Pixel Card Icons
@@ -1136,7 +1440,7 @@ export class PixelTableRenderer {
     ctx.lineWidth = 1;
     ctx.strokeRect(x + 0.5, y + 0.5, 16 * p - 1, 16 * p - 1);
 
-    if (avatarKey === 'fox' || avatarKey === 'wolf') {
+    if (avatarKey === 'fox' || avatarKey === 'wolf' || avatarKey === 'cat' || avatarKey === 'owl') {
       ctx.fillStyle = pal.main;
       ctx.fillRect(x + 2 * p, y + 1 * p, 3 * p, 3 * p);
       ctx.fillRect(x + 11 * p, y + 1 * p, 3 * p, 3 * p);
@@ -1233,6 +1537,51 @@ export class PixelTableRenderer {
     const cx = Math.floor(w / 2);
     const cy = Math.floor(h / 2);
 
+    if (state.gameType === 'POKER_LIAR_BAR') {
+      const titleStr = `POKER LIAR BAR • ${state.street} • CƯỢC: ${state.currentStake} ĐẠN`;
+      ctx.font = 'bold 12px "Courier New", monospace';
+      const bannerW = Math.max(260, Math.ceil(ctx.measureText(titleStr).width) + 26);
+      const bannerX = Math.floor(cx - bannerW / 2);
+      const bannerY = cy - 72;
+      ctx.fillStyle = '#f4b41b';
+      ctx.fillRect(bannerX - 2, bannerY - 2, bannerW + 4, 28);
+      ctx.fillStyle = '#140d0a';
+      ctx.fillRect(bannerX, bannerY, bannerW, 24);
+      ctx.fillStyle = '#f4b41b';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(titleStr, cx, bannerY + 12);
+
+      // 5 Community Card Slots
+      const cardW = 46;
+      const cardH = 64;
+      const gap = 8;
+      const totalW = 5 * cardW + 4 * gap;
+      const startX = Math.floor(cx - totalW / 2);
+      const cardY = cy - 32;
+      const comm = state.communityCards || [];
+      for (let i = 0; i < 5; i += 1) {
+        const x = startX + i * (cardW + gap);
+        const c = comm[i];
+        if (c) {
+          this._drawPokerCardFace(ctx, x, cardY, cardW, cardH, c);
+        } else {
+          this._drawLargeCardBack(ctx, x, cardY, cardW, cardH, '?');
+        }
+      }
+
+      if (state.lastClaim) {
+        ctx.fillStyle = '#f4b41b';
+        ctx.font = 'bold 12px "Courier New", monospace';
+        ctx.fillText(
+          `${state.lastClaim.playerName} tuyên bố: ${state.lastClaim.handNameVi}`,
+          cx,
+          cy + 50
+        );
+      }
+      return;
+    }
+
     // 1. Key Card Banner at upper-center of felt
     const rankColor = RANK_COLORS[state.tableRank] || '#f4b41b';
     const titleStr = `KEY VÁN ${state.roundNumber}: BÀN LÁ ${state.tableRank}`;
@@ -1274,7 +1623,7 @@ export class PixelTableRenderer {
       const res = state.lastRouletteResult;
       const rawStamp = res
         ? res.isMiracleDodge
-          ? `[1% NÉ ĐẠN!] ${res.playerName}: "Hú hồn, né được nhé!"`
+          ? `[5% HÚ HỒN!] ${res.playerName}: "Hú hồn, may mà né được, lêu lêu con gà kia!"`
           : res.isFatal
           ? `[ĐOÀNG!] ${res.playerName} đã bị bắn vỡ Avatar!`
           : `[TÍCH! ĐẠN RỖNG] ${res.playerName} sống sót (${res.shotsTaken}/6)`
@@ -1338,27 +1687,47 @@ export class PixelTableRenderer {
   }
 
   _drawPixelCardFace(ctx, x, y, w, h, rank, tableRank) {
+    const isDevil = rank === 'D';
     const isMatch = rank === tableRank || rank === 'J';
-    const borderCol = isMatch ? '#3cd070' : '#e03c3c';
+    const borderCol = isDevil ? '#e03c3c' : isMatch ? '#3cd070' : '#e03c3c';
     ctx.fillStyle = borderCol;
     ctx.fillRect(x - 3, y - 3, w + 6, h + 6);
 
-    ctx.fillStyle = '#fdf6e3';
+    ctx.fillStyle = isDevil ? '#1c080c' : '#fdf8ec';
     ctx.fillRect(x, y, w, h);
 
+    if (isDevil) {
+      const cx = Math.floor(x + w / 2);
+      const cy = Math.floor(y + h / 2);
+      ctx.fillStyle = '#ff3b3b';
+      ctx.fillRect(cx - 10, cy - 12, 4, 6);
+      ctx.fillRect(cx + 6, cy - 12, 4, 6);
+      ctx.fillStyle = '#c9182b';
+      ctx.fillRect(cx - 8, cy - 6, 16, 12);
+      ctx.fillStyle = '#ffe066';
+      ctx.fillRect(cx - 5, cy - 2, 3, 3);
+      ctx.fillRect(cx + 2, cy - 2, 3, 3);
+      return;
+    }
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, y, w, h);
+    ctx.clip();
+
     const col = RANK_COLORS[rank] || '#120d0a';
+    this._drawCardCornerIndices(ctx, x, y, w, h, rank, col, 10, 4, 3);
+
     ctx.fillStyle = col;
-    ctx.font = 'bold 20px "Courier New", monospace';
+    ctx.font = 'bold 18px "Courier New", monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(rank, Math.floor(x + w / 2), Math.floor(y + h * 0.42));
 
     ctx.font = 'bold 9px "Courier New", monospace';
     ctx.fillStyle = isMatch ? '#1b6e38' : '#a61e1e';
-    ctx.fillText(
-      rank === 'D' ? 'ÁC QUỶ' : isMatch ? 'REAL' : 'FAKE',
-      Math.floor(x + w / 2),
-      Math.floor(y + h * 0.78)
-    );
+    ctx.fillText(isMatch ? 'REAL' : 'FAKE', Math.floor(x + w / 2), Math.floor(y + h * 0.74));
+
+    ctx.restore();
   }
 }

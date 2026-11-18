@@ -6,9 +6,9 @@
 - **central_library_path**: `/Users/mrtun/Documents/Freelance/System Instruction Prompts`
 - **task_complexity_level**: `Level 3 — Complex`
 - **active_domains**: `Domain 1: IT and Software Engineering (Primary), Domain 8: Design and Creative (Primary), Domain 5: Business and Product Management (Secondary)`
-- **parent_conversation_id**: `358dbc72-fd87-4a0e-9fde-b69fd34162b1`
-- **pm_conversation_id**: `d9483095-bc42-422d-9ee3-db9d2d520a77`
-- **sa_conversation_id**: `5356aaf3-f251-485f-b2a1-7f20d88181e1`
+- **parent_conversation_id**: `e26dad68-70b7-4a0e-9fde-b69fd34162b1`
+- **pm_conversation_id**: `e58bb9c3-46f6-43cc-aff9-34b996d833f2`
+- **sa_conversation_id**: `de3e9fa0-a1b5-484b-9b15-cc635ee7dd80`
 
 ---
 
@@ -109,3 +109,56 @@
 ## 9. Outstanding Issues & Next Actions
 - **Known Limitations / Unverified Areas**: `None.`
 - **Next Actions**: `Push clean repository to https://github.com/MrPhuocTan/liars-bar-2d and deliver 6-part final report.`
+
+---
+
+## 10. v2.0 Multiplayer, Poker Liar Bar & Full QC/PM/SA Verification (`2026-11-17`)
+- **PM Audit & Fixes (`PASS`):**
+  - Fixed P0 frontend startup crash (`renderer.start()` -> `renderer.startLoop()` in `public/js/app.js`) so new users immediately see `#profileSetupModal` and all Lobby / Create Room / Waiting Room / In-Game controls work.
+  - Added `REQUIRE_PROFILE` server guard when an unrecognized token is sent without a name, aligned 2–24 char name validation (`src/db/database.js`), and removed all Unicode emojis from `public/js/app.js`.
+  - Fixed `aiBot.js` Devil card count (`state.roundHasDevil || state.includeDevil`), `5%` Hú hồn copy in `gameEngine.js` & `pixelRenderer.js`, `DEVIL` verdict headline, `cat`/`owl` canvas ears, `Sảnh Chúa (9)` option in Poker Liar Bar, `ROUND_END` banner, and keyboard shortcuts (`Space/L/P/R/X`).
+- **SA Audit & Fixes (`PASS`):**
+  - Hardened `wsServer.js` (RFC 6455 close frame before `closed=true`, fragmented frame buffering, `upgrade` `head` byte forwarding).
+  - Hardened `roomManager.js` (prevented double-recorded `LOSS` on mid-match forfeit via `recordedPlayerIds`, closed replaced sockets on reconnect, fixed eligible-player turn advance on forfeit).
+- **Verification Evidence:**
+  - `npm test`: **16/16 passed** (`tests/engine.test.js`, `tests/poker.test.js`, `tests/e2e_qa_verify.mjs`).
+  - Live Browser QA (`http://127.0.0.1:3000`): **10/10 steps passed** with **0 console errors** (Profile Setup -> Lobby with 0 bot rooms -> Profile & History -> Create Room bottom-left button -> Waiting Room -> Start Match -> 60s center timer + Key Card image + 2D cards without "Đánh fake" + Card Play slam animation).
+  - **SA_GATE:** `PASS` | **PM_GATE:** `PASS`
+
+---
+
+## 11. v2.1 UI/UX, Card Art, Devil Rule & Realtime Polish (`2026-11-17`)
+- **Acceptance Criteria (`AC-17`–`AC-20`):**
+  - `AC-17`: Fit-to-viewport `100dvh` responsive layout on desktop/laptop without vertical scrolling (`public/css/pixel-style.css`).
+  - `AC-18`: 5-card deal animation (all 5 cards dealt per player), brighter high-contrast tavern felt & wood (`public/js/pixelRenderer.js`), zero center-text overlap during cutscenes.
+  - `AC-19`: Authentic 2D pixel playing card art (`public/js/cardArt.js` & `public/js/pixelRenderer.js`), Devil card renders horned Devil emblem with zero `"ÁC QUỶ"` text label, and Devil trap forces all other alive players on table to shoot.
+  - `AC-20`: Faster realtime responsiveness (`botThinkMinMs=600`, `botThinkMaxMs=1200`, `roundEndDelayMs=2000` in `server.js`, snappier cutscene timings in `public/js/app.js`).
+
+## 12. v2.2 Avatar Scaling, FE Seat/Mobile Layout & Slow-Paced Reveal/Gunshot (`2026-11-17`)
+- `AC-21`: Edge-to-edge `drawPixelAvatar` scaling (`public/js/cardArt.js`), zero HUD/seat overlap (`pixelRenderer.js` `_getSeatCoordinates`, `pixel-style.css`), mobile 5-card single row, overlay drawer on `<=960px`, hide `< CHAT / LOG` when open.
+- `AC-22`: Smooth 1-turn cylinder spin + gunshot smoke/recoil (FATAL/DODGE) and compressed air-puff `"TÍCH! (XÌ HƠI)"` (BLANK) in `pixelRenderer.js`.
+- `AC-23`: Synchronized slow animation & server pacing (`4.8s` deal, `4.0s` reveal, `3.2–3.8s` shot, `4.3s` bot roulette delay, `4.5s` roundEndDelayMs) so players can read every reveal & shot before the next round starts.
+
+## 13. v2.3 PM + SA Audit Remediation (`2026-11-18`)
+- `AC-24`: Poker Liar Bar cutscenes (`POKER_SHOWDOWN`, `POKER_BLUFF_REVEAL`, `STREET_REVEAL`), accurate `_drawRouletteReadyStage` Poker verdict labels, `#selectPokerClaim` min-rank clamping, `SWITCH` card-selection prompt, and `COWARD_FOLD` `allMatched` check.
+- `AC-25`: Fix `DEAL_ROUND` `dealStart` reachability (`0.72` -> `28%` deal window for 20 cards), prevent premature `#btnPullTrigger` clicks during `CALL_LIAR_REVEAL`, prevent stale `lastEvent` replay on reconnect, and sync `botThinkMinMs = 1900`, `roundEndDelayMs = 4800`.
+- `AC-26`: Sequential `targetPlayerIds[0]` enforcement in `pullTrigger`, WS masking + 64KB fragment cap (`wsServer.js`), `#lobbyLoadingState` wiring, and desktop `overflow-y: hidden`.
+
+---
+
+## 14. v2.4 Comprehensive Audit Remediation (`2026-11-18`)
+- **Governance Binding (`e26dad68-70b7-4a0e-9fde-b69fd34162b1`):** Live `PM` (`e58bb9c3-46f6-43cc-aff9-34b996d833f2`), `SA` (`de3e9fa0-a1b5-484b-9b15-cc635ee7dd80`).
+- **Acceptance Criteria (`AC-27`–`AC-31`):**
+  - `AC-27`: Custom WS close code `4001` on replaced socket (`roomManager.js#L118`) + non-reconnecting handler in `app.js#L79-L83`.
+  - `AC-28`: Mid-match `leaveRoom()` clean recovery during `ROULETTE_PENALTY` & `FINAL_CHALLENGE_WINDOW` (`roomManager.js#L474-L512`), plus server `currentStake < 6` guard on Poker `RAISE` / `ALL_IN` (`pokerEngine.js#L586-L594`).
+  - `AC-29`: `serverNow` clock-skew sync for 60s countdown (`app.js`), `.screen-section` `overflow-y: auto` inside `100dvh` (`pixel-style.css`), non-overlapping `#toastBanner` (`bottom: 14px; pointer-events: none;`), and `DEAL_ROUND` bot delay (`>= 5000ms`).
+  - `AC-30`: 2-corner indices on Canvas Poker community cards & non-Devil reveal cards (`pixelRenderer.js`), server-minted DB tokens (`database.js`), gated legacy test flags (`server.js`), and `1% -> 5%` comment cleanup.
+  - `AC-31`: Regression tests in `tests/poker.test.js` & `tests/e2e_qa_verify.mjs` (`npm test` 100% PASS) + fresh server restart + live `browser` re-verification (`0` console errors) before dual `SA_GATE` + `PM_GATE` signoff.
+- **Disjoint Write-Locks & Handoffs:**
+  - `WS-BE-PATCH` (`8e83a74b-4a90-49f3-98dc-8a80a0bc186c` — `PASS`): `src/server/roomManager.js`, `src/engine/pokerEngine.js`, `src/engine/gameEngine.js`, `src/db/database.js`, `server.js`, `tests/poker.test.js`, `tests/e2e_qa_verify.mjs`.
+  - `WS-FE-PATCH` (`5ccafe7c-9285-4f61-b745-85d9a971fc4a` — `PASS`): `public/js/app.js`, `public/css/pixel-style.css`, `public/js/pixelRenderer.js`, `public/js/soundFX.js`.
+- **Final v2.4 Verification & Signoff (`2026-11-18`):**
+  - `npm test`: **`21/21 PASS`** (`E2E-01`..`E2E-07`, `AC-01`..`AC-06`, `AC-09`, `AC-10`, `PK-01`..`PK-06`).
+  - Live Browser QA (`ca954cbc-4937-4f01-9b0f-511562ff9478` on `http://127.0.0.1:3000`): **`0` console/page errors**, **`6/6` HTTP `200 OK`**, `#connStatusPill` stably `ONLINE`, fresh `#profileSetupModal`, profile edit + bottom toast, invalid invite error, `Liar's Deck` + mid-match `#btnConfirmLeave` -> Lobby + DB `THUA`, `Poker Liar Bar` (`FLOP` 2-corner Canvas community cards, `SWITCH` hiding `ALL-IN`, `FOLD` + `ROULETTE_SHOT`), and `1440x900` / `1366x768` / `768x1024` / `375x812` responsive checks verified.
+  - **`SA_GATE` (`de3e9fa0-a1b5-484b-9b15-cc635ee7dd80`):** **`PASS`**
+  - **`PM_GATE` (`e58bb9c3-46f6-43cc-aff9-34b996d833f2`):** **`PASS`**
